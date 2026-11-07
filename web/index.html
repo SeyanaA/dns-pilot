@@ -1,0 +1,1057 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DNS Pilot · 控制面板</title>
+<style>
+  :root{
+    --bg:#070b15; --bg2:#0b1222; --card:#0e1728; --card2:#111d33;
+    --line:rgba(148,163,184,.14); --line2:rgba(148,163,184,.26);
+    --txt:#e6edf7; --muted:#8b9bb4; --dim:#5c6b83;
+    --cyan:#38e1ff; --violet:#8b7bff; --green:#34d399; --amber:#fbbf24; --red:#fb7185;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:
+      radial-gradient(1100px 500px at 12% -10%, rgba(56,225,255,.10), transparent 60%),
+      radial-gradient(900px 500px at 88% -20%, rgba(139,123,255,.10), transparent 60%),
+      var(--bg);
+    color:var(--txt); font-family:var(--sans); font-size:14px; line-height:1.5;
+    min-height:100vh; -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit}
+  .topbar{
+    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+    padding:16px 26px; border-bottom:1px solid var(--line);
+    background:rgba(7,11,21,.72); backdrop-filter:blur(14px);
+    position:sticky; top:0; z-index:50;
+  }
+  .brand{display:flex; align-items:center; gap:12px; min-width:230px}
+  .logo{width:38px;height:38px;flex:0 0 auto; filter:drop-shadow(0 0 12px rgba(56,225,255,.35))}
+  .brand h1{font-size:16px; margin:0; letter-spacing:.3px}
+  .brand p{margin:0; font-size:11.5px; color:var(--muted)}
+  .pills{display:flex; gap:8px; flex-wrap:wrap; flex:1}
+  .pill{
+    display:inline-flex; align-items:center; gap:7px; padding:6px 11px;
+    border:1px solid var(--line2); border-radius:999px; font-size:12px; color:var(--muted);
+    background:rgba(15,23,42,.6); white-space:nowrap;
+  }
+  .pill b{color:var(--txt); font-weight:600}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px rgba(92,107,131,.16)}
+  .dot.ok{background:var(--green); box-shadow:0 0 0 3px rgba(52,211,153,.16)}
+  .dot.warn{background:var(--amber); box-shadow:0 0 0 3px rgba(251,191,36,.16)}
+  .dot.bad{background:var(--red); box-shadow:0 0 0 3px rgba(251,113,133,.16)}
+  .tools{display:flex; gap:8px; align-items:center}
+  .btn{
+    appearance:none; border:1px solid var(--line2); background:rgba(17,29,51,.8); color:var(--txt);
+    padding:8px 14px; border-radius:9px; font-size:13px; cursor:pointer; font-family:inherit;
+    transition:.16s; white-space:nowrap;
+  }
+  .btn:hover{border-color:rgba(56,225,255,.55); background:rgba(23,40,68,.9)}
+  .btn.primary{background:linear-gradient(135deg,rgba(56,225,255,.18),rgba(139,123,255,.20)); border-color:rgba(56,225,255,.35)}
+  .btn.ghost{background:transparent}
+  .btn.danger{border-color:rgba(251,113,133,.35); color:#ffd0d8}
+  .btn.danger:hover{background:rgba(251,113,133,.12)}
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  .btn.sm{padding:5px 10px; font-size:12px; border-radius:7px}
+  main{padding:22px 26px 30px; max-width:1560px; margin:0 auto}
+  .kpis{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin-bottom:16px}
+  .kpi{
+    position:relative; overflow:hidden; padding:16px 18px; border-radius:14px;
+    border:1px solid var(--line); background:linear-gradient(160deg,var(--card2),var(--card));
+  }
+  .kpi:before{content:""; position:absolute; inset:0 0 auto 0; height:2px; background:linear-gradient(90deg,var(--cyan),transparent)}
+  .kpi .label{font-size:12px; color:var(--muted); display:flex; align-items:center; gap:7px}
+  .kpi .value{font-size:30px; font-weight:650; letter-spacing:.4px; margin-top:6px; font-variant-numeric:tabular-nums}
+  .kpi .sub{font-size:11.5px; color:var(--dim); margin-top:2px}
+  .grid{display:grid; grid-template-columns:minmax(0,2.1fr) minmax(310px,.85fr); gap:14px; margin-bottom:20px}
+  .card{border:1px solid var(--line); border-radius:14px; background:linear-gradient(170deg,rgba(17,29,51,.72),rgba(14,23,40,.9)); overflow:hidden}
+  .card-head{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 16px; border-bottom:1px solid var(--line)}
+  .card-head h2{margin:0; font-size:13.5px; font-weight:600; letter-spacing:.2px}
+  .muted{color:var(--muted); font-size:12px}
+  .table-wrap{max-height:420px; overflow:auto}
+  table{width:100%; border-collapse:collapse; font-size:12.5px}
+  thead th{
+    position:sticky; top:0; z-index:2; text-align:left; font-weight:500; color:var(--muted);
+    padding:9px 12px; background:rgba(10,17,31,.96); border-bottom:1px solid var(--line); font-size:11.5px; white-space:nowrap;
+  }
+  tbody td{padding:8px 12px; border-bottom:1px solid rgba(148,163,184,.07); vertical-align:middle; white-space:nowrap}
+  tbody tr:hover{background:rgba(56,225,255,.035)}
+  .mono{font-family:var(--mono); font-size:12px}
+  .domain{font-family:var(--mono); font-size:12px; color:#dbeafe; max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .appcell{display:flex; align-items:center; gap:7px; white-space:nowrap}
+  .cell-stack{line-height:1.3}
+  .cell-stack .up{font-size:10.5px; color:var(--dim); font-family:var(--mono)}
+  .status-cell{display:flex; align-items:center; gap:7px; white-space:nowrap}
+  .badge{display:inline-flex; align-items:center; gap:5px; padding:2px 7px; border-radius:6px; font-size:11px; border:1px solid var(--line2); color:var(--muted); white-space:nowrap}
+  .badge.dns{color:#9be8ff; border-color:rgba(56,225,255,.30); background:rgba(56,225,255,.07)}
+  .badge.proxy{color:#c8c0ff; border-color:rgba(139,123,255,.32); background:rgba(139,123,255,.09)}
+  .badge.domain-rule{color:#a7f3d0; border-color:rgba(52,211,153,.28); background:rgba(52,211,153,.07)}
+  .badge.app-rule{color:#fde68a; border-color:rgba(251,191,36,.28); background:rgba(251,191,36,.07)}
+  .badge.none{color:var(--muted)}
+  .badge.hit{color:#a7f3d0; border-color:rgba(52,211,153,.35); background:rgba(52,211,153,.08)}
+  .badge.miss{color:var(--dim)}
+  .lat{font-family:var(--mono); font-variant-numeric:tabular-nums}
+  .lat.good{color:#86efac}.lat.mid{color:#fde68a}.lat.bad{color:#fda4af}
+  .st{display:inline-flex; align-items:center; gap:6px; font-size:11.5px}
+  .st .dot{width:6px;height:6px}
+  .side-body{padding:12px 14px 16px}
+  #chart{width:100%; height:118px; display:block}
+  .tops{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:12px}
+  .tops h3{font-size:11.5px; color:var(--muted); font-weight:500; margin:0 0 8px}
+  .tops ul{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px}
+  .tops li{display:flex; align-items:center; gap:8px; font-size:11.5px; min-width:0}
+  .tops .name{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); color:#cfe0f7}
+  .tops .cnt{color:var(--muted); font-variant-numeric:tabular-nums}
+  .bar{height:3px; border-radius:2px; background:linear-gradient(90deg,var(--cyan),var(--violet)); opacity:.65; min-width:2px}
+  .tabs{display:flex; gap:6px; border-bottom:1px solid var(--line); margin-bottom:16px; flex-wrap:wrap}
+  .tab-btn{
+    appearance:none; border:none; background:transparent; color:var(--muted); font-family:inherit;
+    font-size:13px; padding:10px 14px; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px;
+  }
+  .tab-btn:hover{color:var(--txt)}
+  .tab-btn.active{color:var(--txt); border-bottom-color:var(--cyan)}
+  .tab-panel{display:none; animation:fade .18s ease}
+  .tab-panel.active{display:block}
+  @keyframes fade{from{opacity:0; transform:translateY(3px)}to{opacity:1; transform:none}}
+  .cols{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+  .section-title{display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 10px}
+  .section-title h2{font-size:14px; margin:0; font-weight:600}
+  .hint{font-size:12px; color:var(--muted); margin:-2px 0 12px}
+  .form-row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px 14px; border-top:1px solid var(--line); background:rgba(8,13,24,.35)}
+  input[type=text], input[type=number], select{
+    background:rgba(7,12,22,.85); border:1px solid var(--line2); color:var(--txt);
+    border-radius:8px; padding:8px 10px; font-family:inherit; font-size:12.5px; min-width:0; outline:none;
+  }
+  input:focus, select:focus{border-color:rgba(56,225,255,.6); box-shadow:0 0 0 3px rgba(56,225,255,.10)}
+  input::placeholder{color:var(--dim)}
+  .grow{flex:1; min-width:140px}
+  .switch{
+    width:38px; height:21px; border-radius:999px; border:1px solid var(--line2);
+    background:rgba(92,107,131,.25); position:relative; cursor:pointer; padding:0; transition:.18s;
+  }
+  .switch:after{content:""; position:absolute; top:2px; left:2px; width:15px; height:15px; border-radius:50%; background:#9aa9be; transition:.18s}
+  .switch.on{background:rgba(52,211,153,.28); border-color:rgba(52,211,153,.55)}
+  .switch.on:after{left:20px; background:var(--green)}
+  .icon-btn{background:transparent; border:1px solid var(--line2); color:var(--muted); width:27px; height:27px; border-radius:7px; cursor:pointer; font-size:13px; line-height:1}
+  .icon-btn:hover{color:#ffd0d8; border-color:rgba(251,113,133,.5); background:rgba(251,113,133,.08)}
+  .adapter-table td{font-size:12px}
+  .chips{display:flex; gap:6px; flex-wrap:wrap}
+  .chip{font-family:var(--mono); font-size:11px; padding:3px 7px; border-radius:6px; background:rgba(56,225,255,.07); border:1px solid rgba(56,225,255,.18); color:#b6ecff}
+  .profile-card{padding:13px 14px; border-bottom:1px solid var(--line)}
+  .profile-head{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+  .profile-head .name{font-weight:600; font-size:13px}
+  .profile-card.system{border-left:2px solid rgba(251,191,36,.55)}
+  .profile-card .meta{font-size:11.5px; color:var(--dim); margin-top:5px}
+  .banner{
+    display:flex; gap:12px; align-items:flex-start; padding:14px 16px; border-radius:12px;
+    border:1px solid var(--line2); background:rgba(17,29,51,.6); margin-bottom:14px;
+  }
+  .banner.ok{border-color:rgba(52,211,153,.32); background:rgba(52,211,153,.06)}
+  .banner.warn{border-color:rgba(251,191,36,.32); background:rgba(251,191,36,.06)}
+  .banner .big{font-size:24px; line-height:1.1}
+  .banner h3{margin:0 0 3px; font-size:13.5px}
+  .banner p{margin:0; color:var(--muted); font-size:12px}
+  .actions{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px}
+  .settings-grid{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 18px; padding:16px}
+  .field{display:flex; flex-direction:column; gap:6px}
+  .field label{font-size:12px; color:var(--muted)}
+  .field .row{display:flex; gap:8px; align-items:center}
+  .field input, .field select{width:100%}
+  .test-result{margin-top:12px; padding:12px 14px; border-radius:10px; border:1px dashed var(--line2); font-size:12px; min-height:46px; color:var(--muted)}
+  .test-result.ok{border-color:rgba(52,211,153,.35); background:rgba(52,211,153,.05)}
+  .test-result.bad{border-color:rgba(251,113,133,.35); background:rgba(251,113,133,.05)}
+  .kv{display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px dashed rgba(148,163,184,.12); font-size:12.5px}
+  .kv:last-child{border-bottom:none}
+  .kv span:first-child{color:var(--muted)}
+  footer{padding:18px 26px 30px; color:var(--dim); font-size:11.5px; display:flex; gap:18px; flex-wrap:wrap; max-width:1560px; margin:0 auto}
+  #toasts{position:fixed; right:18px; bottom:18px; display:flex; flex-direction:column; gap:8px; z-index:99; max-width:min(420px,90vw)}
+  .toast{
+    padding:11px 14px; border-radius:10px; background:#111d33; border:1px solid var(--line2);
+    box-shadow:0 12px 34px rgba(0,0,0,.45); font-size:12.5px; animation:slide .2s ease;
+  }
+  .toast.ok{border-color:rgba(52,211,153,.45)}
+  .toast.err{border-color:rgba(251,113,133,.5)}
+  .toast .t-title{font-weight:600; margin-bottom:2px}
+  .toast .t-sub{color:var(--muted); font-size:11.5px; word-break:break-word}
+  @keyframes slide{from{opacity:0; transform:translateX(12px)}to{opacity:1; transform:none}}
+  .empty{padding:26px 16px; text-align:center; color:var(--dim); font-size:12.5px}
+  .spin{display:inline-block; width:10px; height:10px; border:2px solid rgba(56,225,255,.25); border-top-color:var(--cyan); border-radius:50%; animation:rot .7s linear infinite; vertical-align:-1px}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  @media (max-width:1080px){
+    .kpis{grid-template-columns:repeat(2,1fr)}
+    .grid{grid-template-columns:1fr}
+    .cols{grid-template-columns:1fr}
+    .settings-grid{grid-template-columns:1fr}
+  }
+  @media (max-width:640px){
+    main{padding:14px}
+    .topbar{padding:12px 14px}
+    .kpis{grid-template-columns:1fr 1fr; gap:9px}
+    .kpi .value{font-size:24px}
+    .domain{max-width:150px}
+    .hide-sm{display:none}
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="lg" x1="0" y1="0" x2="48" y2="48">
+          <stop stop-color="#38e1ff"/><stop offset="1" stop-color="#8b7bff"/>
+        </linearGradient>
+      </defs>
+      <path d="M24 3.5 41.5 13.6v20.2L24 44 6.5 33.8V13.6L24 3.5Z" stroke="url(#lg)" stroke-width="2.2"/>
+      <path d="M15 30.5V17.5h5.6c3.9 0 6.4 2.4 6.4 6.5s-2.5 6.5-6.4 6.5H15Z" stroke="#e6edf7" stroke-width="2.1" stroke-linejoin="round"/>
+      <path d="M31.5 17.5v13" stroke="url(#lg)" stroke-width="2.1" stroke-linecap="round"/>
+    </svg>
+    <div>
+      <h1>DNS Pilot</h1>
+      <p>按应用 / 按域名 · DNS 路由控制台</p>
+    </div>
+  </div>
+  <div class="pills" id="pills">
+    <span class="pill"><span class="dot" id="dnsDot"></span>解析器 <b id="dnsState">—</b></span>
+    <span class="pill"><span class="dot" id="tkDot"></span>系统接管 <b id="tkState">—</b></span>
+    <span class="pill"><span class="dot" id="admDot"></span>权限 <b id="admState">—</b></span>
+    <span class="pill" id="cachePill">缓存 <b id="cacheState">—</b></span>
+  </div>
+  <div class="tools">
+    <button class="btn ghost sm" id="pauseBtn">暂停</button>
+    <button class="btn sm" id="refreshBtn">刷新</button>
+  </div>
+</header>
+
+<main>
+  <section class="kpis">
+    <div class="kpi">
+      <div class="label">DNS 查询总数</div>
+      <div class="value" id="kpiTotal">0</div>
+      <div class="sub" id="kpiTotalSub">等待流量…</div>
+    </div>
+    <div class="kpi">
+      <div class="label">DNS 缓存命中率</div>
+      <div class="value" id="kpiHit">0%</div>
+      <div class="sub" id="kpiHitSub">缓存 0 条</div>
+    </div>
+    <div class="kpi">
+      <div class="label">平均解析延迟</div>
+      <div class="value" id="kpiLat">0 ms</div>
+      <div class="sub" id="kpiLatSub">仅统计上游请求</div>
+    </div>
+    <div class="kpi">
+      <div class="label">代理连接</div>
+      <div class="value" id="kpiProxy">0</div>
+      <div class="sub" id="kpiProxySub">按应用解析次数</div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <div class="card-head">
+        <h2>实时解析流</h2>
+        <span class="muted" id="streamMeta">最近 200 条</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:62px">时间</th>
+              <th>应用</th>
+              <th>域名</th>
+              <th style="width:64px">规则</th>
+              <th>DNS 配置 / 上游</th>
+              <th style="width:66px">延迟</th>
+              <th style="width:94px">结果</th>
+            </tr>
+          </thead>
+          <tbody id="liveBody">
+            <tr><td colspan="7"><div class="empty">还没有解析流量。打开一个网站，或使用下方“测试解析”。</div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>最近 60 秒请求量</h2>
+        <span class="muted" id="chartMeta">—</span>
+      </div>
+      <div class="side-body">
+        <canvas id="chart" height="118"></canvas>
+        <div class="tops">
+          <div>
+            <h3>热门域名</h3>
+            <ul id="topDomains"><li class="muted">暂无数据</li></ul>
+          </div>
+          <div>
+            <h3>活跃应用</h3>
+            <ul id="topApps"><li class="muted">暂无数据</li></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab-btn active" data-tab="rules">规则与路由</button>
+    <button class="tab-btn" data-tab="dns">DNS 服务器</button>
+    <button class="tab-btn" data-tab="takeover">系统接管</button>
+    <button class="tab-btn" data-tab="settings">设置</button>
+  </nav>
+
+  <section class="tab-panel active" id="tab-rules">
+    <div class="cols">
+      <div class="card">
+        <div class="card-head">
+          <h2>应用规则</h2>
+          <span class="muted">按进程名匹配，作用于直连查询与代理流量</span>
+        </div>
+        <div class="table-wrap" style="max-height:300px">
+          <table>
+            <thead><tr><th>进程</th><th>DNS 配置</th><th>备注</th><th style="width:64px">启用</th><th style="width:40px"></th></tr></thead>
+            <tbody id="appRulesBody"><tr><td colspan="5"><div class="empty">暂无应用规则</div></td></tr></tbody>
+          </table>
+        </div>
+        <div class="form-row">
+          <input type="text" id="appMatch" class="grow" placeholder="进程名，如 chrome.exe 或游戏名*.exe" />
+          <select id="appProfile"></select>
+          <input type="text" id="appNote" class="grow" placeholder="备注（可选）" />
+          <button class="btn primary sm" id="addAppBtn">添加</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>域名规则</h2>
+          <span class="muted">后缀匹配，优先级高于应用规则</span>
+        </div>
+        <div class="table-wrap" style="max-height:300px">
+          <table>
+            <thead><tr><th>域名</th><th>DNS 配置</th><th>备注</th><th style="width:64px">启用</th><th style="width:40px"></th></tr></thead>
+            <tbody id="domainRulesBody"><tr><td colspan="5"><div class="empty">暂无域名规则</div></td></tr></tbody>
+          </table>
+        </div>
+        <div class="form-row">
+          <input type="text" id="domainMatch" class="grow" placeholder="域名，如 netflix.com（含子域）" />
+          <select id="domainProfile"></select>
+          <input type="text" id="domainNote" class="grow" placeholder="备注（可选）" />
+          <button class="btn primary sm" id="addDomainBtn">添加</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="banner warn" style="margin-top:16px">
+      <div class="big">★</div>
+      <div>
+        <h3>两条绑定路径，按需要选择</h3>
+        <p>
+          <b>域名绑定</b>：接管系统 DNS 后全系统透明生效，无需改应用设置。<br/>
+          <b>应用绑定</b>：把应用的 HTTP/SOCKS 代理指向 <span class="mono" id="proxyAddrHint">127.0.0.1:8899</span>，
+          代理会按“发起连接的进程”选择 DNS。代理路径无需管理员权限。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-dns">
+    <div class="card">
+      <div class="card-head">
+        <h2>DNS 服务器配置</h2>
+        <span class="muted">主服务器优先，失败后按顺序回退</span>
+      </div>
+      <div id="profileList"></div>
+      <div class="form-row">
+        <input type="text" id="profileName" class="grow" placeholder="配置名称，如 家庭 DNS" />
+        <input type="text" id="profileServers" class="grow" placeholder="服务器，如 1.1.1.1, 1.0.0.1" />
+        <select id="profileStrategy">
+          <option value="failover">主用 + 回退</option>
+          <option value="only">仅用第一项</option>
+        </select>
+        <button class="btn primary sm" id="addProfileBtn">添加配置</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><h2>解析测试</h2><span class="muted">走完整规则与上游链路，不写缓存</span></div>
+      <div class="form-row">
+        <input type="text" id="testDomain" class="grow" placeholder="要测试的域名，如 example.com" />
+        <select id="testProfile"></select>
+        <button class="btn primary sm" id="testBtn">测试解析</button>
+      </div>
+      <div style="padding:0 14px 14px"><div class="test-result" id="testResult">等待测试…</div></div>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-takeover">
+    <div class="banner" id="takeoverBanner">
+      <div class="big">◎</div>
+      <div>
+        <h3 id="takeoverTitle">系统 DNS 接管</h3>
+        <p id="takeoverText">接管后所有应用的 DNS 查询都会经过本程序，域名规则对全系统生效；程序退出时会自动恢复原设置。</p>
+      </div>
+    </div>
+    <div class="actions" style="margin-bottom:16px">
+      <button class="btn primary" id="applyTakeoverBtn">接管系统 DNS</button>
+      <button class="btn" id="restoreTakeoverBtn">恢复原 DNS</button>
+      <button class="btn ghost" id="elevateBtn" style="display:none">以管理员身份重启</button>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>当前网卡 DNS</h2><span class="muted" id="backupMeta">—</span></div>
+      <div class="table-wrap">
+        <table class="adapter-table">
+          <thead><tr><th>网卡</th><th>IPv4 DNS</th><th>IPv6 DNS</th><th>配置方式</th><th>状态</th></tr></thead>
+          <tbody id="adapterBody"><tr><td colspan="5"><div class="empty">正在读取…</div></td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><h2>工作方式与安全</h2></div>
+      <div class="settings-grid">
+        <div class="kv"><span>解析器监听</span><span class="mono" id="tkListen">—</span></div>
+        <div class="kv"><span>IPv6 环回监听</span><span class="mono" id="tkV6">—</span></div>
+        <div class="kv"><span>接管前自检</span><span>探测 example.com 解析成功后才会接管</span></div>
+        <div class="kv"><span>退出恢复</span><span id="tkRestore">—</span></div>
+        <div class="kv"><span>备份项</span><span class="mono" id="tkBackup">—</span></div>
+        <div class="kv"><span>所需权限</span><span>管理员（UAC）</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab-panel" id="tab-settings">
+    <div class="cols">
+      <div class="card">
+        <div class="card-head"><h2>默认策略</h2><span class="muted">未命中规则时使用</span></div>
+        <div class="settings-grid">
+          <div class="field" style="grid-column:1/-1">
+            <label>默认 DNS 配置</label>
+            <select id="setDefaultProfile"></select>
+          </div>
+          <div class="field">
+            <label>缓存</label>
+            <div class="row"><button class="switch" id="setCache" data-on="0"></button><span class="muted" id="setCacheLabel">关闭</span></div>
+          </div>
+          <div class="field">
+            <label>退出时恢复系统 DNS</label>
+            <div class="row"><button class="switch" id="setRestore" data-on="0"></button><span class="muted" id="setRestoreLabel">关闭</span></div>
+          </div>
+          <div class="field">
+            <label>最小 TTL（秒）</label>
+            <input type="number" id="setMinTtl" min="1" max="86400" />
+          </div>
+          <div class="field">
+            <label>最大 TTL（秒）</label>
+            <input type="number" id="setMaxTtl" min="1" max="86400" />
+          </div>
+          <div class="field">
+            <label>上游超时（毫秒）</label>
+            <input type="number" id="setTimeout" min="200" max="10000" />
+          </div>
+          <div class="field">
+            <label>启动桌面窗口（重启生效）</label>
+            <div class="row"><button class="switch" id="setNative" data-on="0"></button><span class="muted" id="setNativeLabel">关闭</span></div>
+          </div>
+          <div class="field">
+            <label>启动时打开浏览器</label>
+            <div class="row"><button class="switch" id="setBrowser" data-on="0"></button><span class="muted" id="setBrowserLabel">关闭</span></div>
+          </div>
+        </div>
+        <div class="form-row">
+          <button class="btn primary" id="saveSettingsBtn">保存设置</button>
+          <button class="btn" id="clearCacheBtn">清空缓存</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>应用代理</h2><span class="muted">按应用选择 DNS 的入口</span></div>
+        <div class="settings-grid">
+          <div class="field">
+            <label>代理开关</label>
+            <div class="row"><button class="switch" id="setProxy" data-on="0"></button><span class="muted" id="setProxyLabel">关闭</span></div>
+          </div>
+          <div class="field">
+            <label>代理端口（重启生效）</label>
+            <input type="number" id="setProxyPort" min="1" max="65535" />
+          </div>
+          <div class="field">
+            <label>解析端口（重启生效）</label>
+            <input type="number" id="setDnsPort" min="1" max="65535" />
+          </div>
+          <div class="field">
+            <label>面板端口（重启生效）</label>
+            <input type="number" id="setHttpPort" min="1" max="65535" />
+          </div>
+        </div>
+        <div class="form-row" style="display:block">
+          <p class="hint" style="margin:0 0 8px">
+            SOCKS5：<span class="mono" id="socksHint">socks5h://127.0.0.1:8899</span><br/>
+            HTTP 代理（HTTPS/CONNECT）：<span class="mono" id="httpProxyHint">http://127.0.0.1:8899</span>
+          </p>
+          <p class="hint" style="margin:0">浏览器可设置代理后，其域名解析就会按“浏览器进程”的规则执行。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><h2>程序信息</h2><span class="muted">后台状态</span></div>
+      <div class="settings-grid">
+        <div class="kv"><span>版本</span><span class="mono" id="infoVersion">—</span></div>
+        <div class="kv"><span>进程 ID</span><span class="mono" id="infoPid">—</span></div>
+        <div class="kv"><span>运行时长</span><span class="mono" id="infoUptime">—</span></div>
+        <div class="kv"><span>配置文件</span><span class="mono" id="infoConfig">—</span></div>
+      </div>
+      <div class="form-row">
+        <button class="btn danger" id="quitBtn">退出程序</button>
+        <span class="muted">退出时会按设置恢复系统 DNS</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>DNS Pilot</span>
+  <span>● 本机环回服务，仅监听 127.0.0.1</span>
+  <span id="footUpdated">—</span>
+</footer>
+
+<div id="toasts"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const mono = (s) => `<span class="mono">${esc(s)}</span>`;
+let state = null;
+let paused = false;
+let refreshing = false;
+let errorCount = 0;
+let lastUpdate = 0;
+let pollTimer = null;
+let tab = 'rules';
+let profileSignature = '';
+
+function esc(v){
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtTime(ms){
+  const d = new Date(ms);
+  return d.toLocaleTimeString('zh-CN', {hour12:false});
+}
+function fmtNum(n){ return Number(n||0).toLocaleString('zh-CN'); }
+function pct(v){ return (Number(v||0)*100).toFixed(1) + '%'; }
+
+function toast(title, sub, kind){
+  const el = document.createElement('div');
+  el.className = 'toast ' + (kind || '');
+  el.innerHTML = `<div class="t-title">${esc(title)}</div>${sub ? `<div class="t-sub">${esc(sub)}</div>` : ''}`;
+  $('#toasts').appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .25s'; setTimeout(()=>el.remove(), 260); }, kind === 'err' ? 6500 : 3600);
+}
+
+async function api(path, opts){
+  opts = opts || {};
+  const headers = {'Content-Type': 'application/json'};
+  const method = opts.method || 'GET';
+  if (method === 'POST') headers['X-DNSPilot'] = '1';
+  const res = await fetch(path, {method, headers, body: opts.body});
+  let data;
+  try { data = await res.json(); } catch(e) { throw new Error('响应解析失败（HTTP ' + res.status + '）'); }
+  if (!res.ok && !data.error) throw new Error('HTTP ' + res.status);
+  return data;
+}
+
+function profiles(){ return (state && state.config && state.config.profiles) || []; }
+function profileName(id){
+  const p = profiles().find(x => x.id === id);
+  return p ? p.name : id;
+}
+function profileOptions(selected){
+  return profiles().map(p => `<option value="${esc(p.id)}" ${p.id === selected ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+}
+function syncSelects(sel, selected){
+  const el = $(sel);
+  if (!el) return;
+  const want = selected !== undefined ? selected : el.value;
+  el.innerHTML = profileOptions(want);
+}
+function syncProfileSelects(){
+  const def = state.config.defaultProfile;
+  syncSelects('#appProfile');
+  syncSelects('#domainProfile');
+  syncSelects('#testProfile');
+  const setDef = $('#setDefaultProfile');
+  if (setDef && document.activeElement !== setDef) setDef.innerHTML = profileOptions(def);
+  const sig = profiles().map(p => p.id + ':' + p.name).join('|');
+  if (sig !== profileSignature){
+    profileSignature = sig;
+    const setDef2 = $('#setDefaultProfile');
+    if (setDef2) setDef2.innerHTML = profileOptions(state.config.defaultProfile);
+  }
+}
+
+function badgeRule(type, match){
+  if (type === 'domain') return `<span class="badge domain-rule" title="命中域名规则 ${esc(match)}">域名</span>`;
+  if (type === 'app') return `<span class="badge app-rule" title="命中应用规则 ${esc(match)}">应用</span>`;
+  return '<span class="badge none">默认</span>';
+}
+function badgeStatus(s){
+  const map = {ok:['ok','成功'],nxdomain:['warn','不存在'],servfail:['bad','服务器失败'],timeout:['bad','超时'],refused:['warn','拒绝'],error:['bad','错误']};
+  const m = map[s] || ['warn', s || '未知'];
+  return `<span class="st"><span class="dot ${m[0]}"></span>${esc(m[1])}</span>`;
+}
+function latClass(ms){
+  if (ms <= 0) return '';
+  if (ms < 40) return 'good';
+  if (ms < 200) return 'mid';
+  return 'bad';
+}
+
+function renderPills(){
+  const r = state.resolver, t = state.takeover;
+  $('#dnsDot').className = 'dot ' + (r.ready ? 'ok' : 'bad');
+  $('#dnsState').textContent = r.ready ? ('监听 :' + r.port) : '未就绪';
+  $('#tkDot').className = 'dot ' + (t.active ? 'ok' : 'warn');
+  $('#tkState').textContent = t.active ? '已接管' : '未接管';
+  $('#admDot').className = 'dot ' + (state.admin ? 'ok' : 'warn');
+  $('#admState').textContent = state.admin ? '管理员' : '普通用户';
+  $('#cacheState').textContent = r.cacheEnabled ? ('开启 · ' + r.cacheSize + ' 条') : '关闭';
+  $('#pauseBtn').textContent = paused ? '继续' : '暂停';
+}
+
+function renderKpis(){
+  const s = state.stats;
+  $('#kpiTotal').textContent = fmtNum(s.total);
+  $('#kpiTotalSub').textContent = s.total ? ('失败 ' + fmtNum(s.failures) + ' 次') : '等待流量…';
+  $('#kpiHit').textContent = pct(s.hitRate);
+  $('#kpiHitSub').textContent = '命中 ' + fmtNum(s.cacheHits) + ' 次';
+  $('#kpiLat').textContent = (Number(s.avgLatency)||0).toFixed(1) + ' ms';
+  $('#kpiLatSub').textContent = s.total ? ('共 ' + fmtNum(s.total) + ' 次解析') : '含缓存命中';
+  $('#kpiProxy').textContent = fmtNum(s.proxyConns);
+  $('#kpiProxySub').textContent = '按应用解析次数';
+}
+
+function renderStream(){
+  const events = (state.stats.events || []).slice(-40).reverse();
+  const body = $('#liveBody');
+  if (!events.length){
+    body.innerHTML = '<tr><td colspan="7"><div class="empty">还没有解析流量。打开一个网站，或使用“DNS 服务器 → 解析测试”。</div></td></tr>';
+    $('#streamMeta').textContent = '最近 200 条';
+    return;
+  }
+  $('#streamMeta').textContent = '显示最近 ' + events.length + ' 条 / 共 ' + fmtNum(state.stats.total) + ' 次 DNS';
+  body.innerHTML = events.map(e => {
+    const lat = e.cached ? '<span class="muted">缓存</span>'
+      : `<span class="lat ${latClass(e.latencyMs)}">${Math.round(e.latencyMs)} ms</span>`;
+    const src = e.source === 'proxy' ? '<span class="badge proxy">代理</span>' : '<span class="badge dns">DNS</span>';
+    return `<tr>
+      <td class="mono muted">${fmtTime(e.t)}</td>
+      <td><div class="appcell">${src}<span class="mono" title="PID ${e.pid}">${esc(e.client || '未知')}</span></div></td>
+      <td class="domain" title="${esc(e.domain)}">${esc(e.domain)} <span class="muted">${esc(e.qtype)}</span></td>
+      <td>${badgeRule(e.ruleType, e.ruleMatch)}</td>
+      <td><div class="cell-stack"><div>${esc(e.profileName || e.profileId)}</div><div class="up">${esc(e.upstream || '—')}</div></div></td>
+      <td>${lat}</td>
+      <td><div class="status-cell">${badgeStatus(e.status)}${e.cached ? '<span class="badge hit">HIT</span>' : ''}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+function drawChart(timeline){
+  const c = $('#chart');
+  if (!c) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth || 320, h = 118;
+  c.width = Math.round(w * dpr);
+  c.height = Math.round(h * dpr);
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const data = timeline || [];
+  const max = Math.max(1, ...data.map(p => p.count));
+  const padB = 4, top = 14;
+  const usable = h - top - padB;
+  const barW = data.length ? w / data.length : w;
+
+  ctx.strokeStyle = 'rgba(148,163,184,.12)';
+  ctx.lineWidth = 1;
+  for (let i = 1; i <= 3; i++){
+    const y = top + usable * i / 3;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+  const grad = ctx.createLinearGradient(0, top, 0, h);
+  grad.addColorStop(0, 'rgba(56,225,255,.85)');
+  grad.addColorStop(1, 'rgba(139,123,255,.10)');
+  ctx.fillStyle = grad;
+  data.forEach((p, i) => {
+    const bh = Math.max(0, (p.count / max) * usable);
+    if (bh <= 0) return;
+    ctx.fillRect(i * barW + Math.max(0.5, barW * .12), h - padB - bh, Math.max(1, barW * .76), bh);
+  });
+  ctx.fillStyle = 'rgba(230,237,247,.55)';
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.fillText(max + ' req/s', 4, 11);
+  const total = data.reduce((a, p) => a + p.count, 0);
+  $('#chartMeta').textContent = '合计 ' + fmtNum(total) + ' 次';
+}
+
+function renderTops(){
+  const s = state.stats;
+  const draw = (list, el) => {
+    if (!list || !list.length){ $(el).innerHTML = '<li class="muted">暂无数据</li>'; return; }
+    const max = Math.max(1, ...list.map(x => x.count));
+    $(el).innerHTML = list.map(x =>
+      `<li><span class="name" title="${esc(x.name)}">${esc(x.name)}</span><span class="cnt">${fmtNum(x.count)}</span>
+       <span class="bar" style="width:${Math.max(4, (x.count / max) * 46)}px"></span></li>`).join('');
+  };
+  draw(s.perDomain, '#topDomains');
+  draw(s.perApp, '#topApps');
+}
+
+function ruleRows(list, kind){
+  if (!list.length) return `<tr><td colspan="5"><div class="empty">暂无${kind === 'app' ? '应用' : '域名'}规则</div></td></tr>`;
+  return list.map((r, i) => `<tr>
+    <td class="mono">${esc(r.match)}</td>
+    <td>${esc(profileName(r.profile))}</td>
+    <td class="muted">${esc(r.note || '')}</td>
+    <td><button class="switch ${r.enabled ? 'on' : ''}" data-action="toggle-${kind}" data-index="${i}" title="启用/停用"></button></td>
+    <td><button class="icon-btn" data-action="del-${kind}" data-index="${i}" title="删除">×</button></td>
+  </tr>`).join('');
+}
+
+function renderRules(){
+  $('#appRulesBody').innerHTML = ruleRows(state.config.appRules || [], 'app');
+  $('#domainRulesBody').innerHTML = ruleRows(state.config.domainRules || [], 'domain');
+}
+
+function renderProfiles(){
+  const list = profiles();
+  $('#profileList').innerHTML = list.map(p => {
+    const sys = p.id === 'system';
+    return `<div class="profile-card ${sys ? 'system' : ''}">
+      <div class="profile-head">
+        <span class="name">${esc(p.name)}</span>
+        ${sys ? '<span class="badge none">自动探测</span>' : ''}
+        <span class="badge ${p.strategy === 'only' ? 'none' : 'dns'}">${p.strategy === 'only' ? '仅主用' : '主用+回退'}</span>
+        <span class="muted mono" style="margin-left:auto">${esc(p.id)}</span>
+        ${sys ? '' : `<button class="icon-btn" data-action="del-profile" data-id="${esc(p.id)}" title="删除">×</button>`}
+      </div>
+      <div class="chips" style="margin-top:8px">
+        ${p.servers.length ? p.servers.map(s => `<span class="chip">${esc(s)}</span>`).join('') : '<span class="muted">尚未探测到系统 DNS</span>'}
+      </div>
+      ${p.note ? `<div class="meta">${esc(p.note)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function renderTakeover(){
+  const t = state.takeover;
+  const banner = $('#takeoverBanner');
+  banner.className = 'banner ' + (t.active ? 'ok' : 'warn');
+  $('#takeoverTitle').textContent = t.active ? '系统 DNS 已接管' : '系统 DNS 未接管';
+  $('#takeoverText').textContent = t.active
+    ? '所有应用的域名解析都会经过本程序，域名规则全系统生效。退出程序或点击“恢复原 DNS”即可还原。'
+    : (state.admin ? '点击下方按钮开始接管；接管前会自动探测解析是否可用。' : '接管需要管理员权限，请先点击“以管理员身份重启”。');
+  $('#applyTakeoverBtn').disabled = t.active || !state.admin;
+  $('#restoreTakeoverBtn').disabled = !t.active;
+  const elev = $('#elevateBtn');
+  elev.style.display = state.admin ? 'none' : '';
+  elev.className = state.admin ? 'btn ghost' : 'btn primary';
+  $('#backupMeta').textContent = '备份 ' + t.backupCount + ' 项';
+  $('#tkBackup').textContent = t.backupCount + ' 项';
+  $('#tkListen').textContent = state.resolver.listen + ':' + state.resolver.port;
+  $('#tkV6').textContent = state.resolver.ipv6 ? '已监听 ::1' : '未监听';
+  const cfgUi = state.config.ui || {};
+  $('#tkRestore').textContent = cfgUi.restoreOnExit ? '退出时自动恢复' : '退出时保留接管';
+
+  const rows = (t.adapters || []).map(a => `<tr>
+    <td class="mono">${esc(a.alias)}</td>
+    <td class="mono muted">${a.dns4 && a.dns4.length ? a.dns4.map(esc).join('<br/>') : '—'}</td>
+    <td class="mono muted">${a.dns6 && a.dns6.length ? a.dns6.map(esc).join('<br/>') : '—'}</td>
+    <td class="muted">${esc(a.mode4 === 'static' ? '静态' : 'DHCP')}${a.mode6 === 'static' ? ' / 静态 v6' : ''}</td>
+    <td><span class="st"><span class="dot ok"></span>已连接</span></td>
+  </tr>`).join('');
+  $('#adapterBody').innerHTML = rows || '<tr><td colspan="5"><div class="empty">没有已连接的网卡</div></td></tr>';
+}
+
+function renderHints(){
+  const port = state.proxy.port;
+  $('#proxyAddrHint').textContent = '127.0.0.1:' + port;
+  $('#socksHint').textContent = 'socks5h://127.0.0.1:' + port;
+  $('#httpProxyHint').textContent = 'http://127.0.0.1:' + port;
+  $('#infoVersion').textContent = 'v' + state.version;
+  $('#infoPid').textContent = state.pid;
+  const sec = Math.floor(state.uptimeSec);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  $('#infoUptime').textContent = (h ? h + ' 小时 ' : '') + m + ' 分 ' + s + ' 秒';
+  $('#footUpdated').textContent = '最后更新 ' + new Date(state.now).toLocaleTimeString('zh-CN', {hour12:false});
+}
+
+let settingsReady = false;
+function fillSettings(){
+  const c = state.config;
+  if (!settingsReady || document.activeElement.tagName !== 'INPUT'){
+    if (document.activeElement !== $('#setMinTtl')) $('#setMinTtl').value = c.resolver.minTtl;
+    if (document.activeElement !== $('#setMaxTtl')) $('#setMaxTtl').value = c.resolver.maxTtl;
+    if (document.activeElement !== $('#setTimeout')) $('#setTimeout').value = c.resolver.queryTimeoutMs;
+    if (document.activeElement !== $('#setProxyPort')) $('#setProxyPort').value = c.proxy.port;
+    if (document.activeElement !== $('#setDnsPort')) $('#setDnsPort').value = c.resolver.port;
+    if (document.activeElement !== $('#setHttpPort')) $('#setHttpPort').value = c.resolver.httpPort;
+  }
+  setSwitch('#setCache', c.resolver.cacheEnabled, '#setCacheLabel');
+  setSwitch('#setRestore', c.ui.restoreOnExit, '#setRestoreLabel');
+  setSwitch('#setBrowser', c.ui.openBrowser, '#setBrowserLabel');
+  setSwitch('#setNative', c.ui.nativeWindow, '#setNativeLabel');
+  setSwitch('#setProxy', c.proxy.enabled, '#setProxyLabel');
+  settingsReady = true;
+}
+function setSwitch(sel, on, labelSel){
+  const el = $(sel);
+  el.dataset.on = on ? '1' : '0';
+  el.classList.toggle('on', !!on);
+  if (labelSel) $(labelSel).textContent = on ? '开启' : '关闭';
+}
+
+function render(){
+  if (!state) return;
+  renderPills();
+  renderKpis();
+  renderStream();
+  drawChart(state.stats.timeline);
+  renderTops();
+  syncProfileSelects();
+  renderRules();
+  renderProfiles();
+  renderTakeover();
+  renderHints();
+  fillSettings();
+}
+
+async function refresh(){
+  if (paused || refreshing) return;
+  refreshing = true;
+  try {
+    const data = await api('/api/state');
+    if (data.ok !== false){
+      state = data;
+      lastUpdate = Date.now();
+      render();
+      errorCount = 0;
+    }
+  } catch(e){
+    errorCount++;
+    if (errorCount >= 3){
+      $('#dnsDot').className = 'dot bad';
+      $('#dnsState').textContent = '连接中断（重试中）';
+    }
+  } finally {
+    refreshing = false;
+  }
+}
+
+function startPolling(){
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(refresh, 1000);
+}
+
+// 浏览器会节流后台标签页的定时器：回到页面时立即刷新一次
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+window.addEventListener('focus', () => refresh());
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    tab = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
+    if (tab === 'dns') { syncProfileSelects(); }
+  });
+});
+
+$('#pauseBtn').addEventListener('click', () => {
+  paused = !paused;
+  $('#pauseBtn').textContent = paused ? '继续' : '暂停';
+  toast(paused ? '已暂停刷新' : '已恢复刷新', paused ? '页面数据保持不动' : '每秒自动刷新');
+});
+$('#refreshBtn').addEventListener('click', refresh);
+
+document.addEventListener('click', async (ev) => {
+  const el = ev.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.dataset.action;
+  const index = el.dataset.index;
+  try {
+    if (action === 'toggle-app' || action === 'del-app'){
+      const op = action === 'toggle-app' ? 'toggle' : 'delete';
+      if (op === 'delete' && !confirm('确认删除这条应用规则？')) return;
+      const r = await api('/api/rules/app', {method:'POST', body: JSON.stringify({op, index: Number(index)})});
+      if (!r.ok) throw new Error(r.error || '操作失败');
+      toast(op === 'toggle' ? '规则状态已更新' : '应用规则已删除');
+      await refresh();
+    } else if (action === 'toggle-domain' || action === 'del-domain'){
+      const op = action === 'toggle-domain' ? 'toggle' : 'delete';
+      if (op === 'delete' && !confirm('确认删除这条域名规则？')) return;
+      const r = await api('/api/rules/domain', {method:'POST', body: JSON.stringify({op, index: Number(index)})});
+      if (!r.ok) throw new Error(r.error || '操作失败');
+      toast(op === 'toggle' ? '规则状态已更新' : '域名规则已删除');
+      await refresh();
+    } else if (action === 'del-profile'){
+      const id = el.dataset.id;
+      if (!confirm('删除该 DNS 配置？引用它的规则会改为默认配置。')) return;
+      const r = await api('/api/profiles', {method:'POST', body: JSON.stringify({op:'delete', id})});
+      if (!r.ok) throw new Error(r.error || '操作失败');
+      toast('DNS 配置已删除');
+      await refresh();
+    }
+  } catch(e){ toast('操作失败', e.message, 'err'); }
+});
+
+$('#addAppBtn').addEventListener('click', async () => {
+  const match = $('#appMatch').value.trim();
+  if (!match) return toast('请输入进程名', '例如 chrome.exe', 'err');
+  try {
+    const r = await api('/api/rules/app', {method:'POST', body: JSON.stringify({op:'add', rule:{match, profile:$('#appProfile').value, note:$('#appNote').value.trim(), enabled:true}})});
+    if (!r.ok) throw new Error(r.error || '添加失败');
+    $('#appMatch').value = ''; $('#appNote').value = '';
+    toast('应用规则已添加', match + ' → ' + profileName($('#appProfile').value));
+    await refresh();
+  } catch(e){ toast('添加失败', e.message, 'err'); }
+});
+
+$('#addDomainBtn').addEventListener('click', async () => {
+  const match = $('#domainMatch').value.trim();
+  if (!match) return toast('请输入域名', '例如 netflix.com', 'err');
+  try {
+    const r = await api('/api/rules/domain', {method:'POST', body: JSON.stringify({op:'add', rule:{match, profile:$('#domainProfile').value, note:$('#domainNote').value.trim(), enabled:true}})});
+    if (!r.ok) throw new Error(r.error || '添加失败');
+    $('#domainMatch').value = ''; $('#domainNote').value = '';
+    toast('域名规则已添加', match + ' → ' + profileName($('#domainProfile').value));
+    await refresh();
+  } catch(e){ toast('添加失败', e.message, 'err'); }
+});
+
+function parseServers(text){
+  return text.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
+}
+$('#addProfileBtn').addEventListener('click', async () => {
+  const name = $('#profileName').value.trim();
+  const servers = parseServers($('#profileServers').value);
+  if (!name) return toast('请输入配置名称', '', 'err');
+  if (!servers.length) return toast('请输入至少一个 DNS 服务器', '例如 1.1.1.1', 'err');
+  try {
+    const r = await api('/api/profiles', {method:'POST', body: JSON.stringify({op:'add', profile:{name, servers, strategy:$('#profileStrategy').value}})});
+    if (!r.ok) throw new Error(r.error || '添加失败');
+    $('#profileName').value = ''; $('#profileServers').value = '';
+    toast('DNS 配置已添加', name);
+    await refresh();
+  } catch(e){ toast('添加失败', e.message, 'err'); }
+});
+
+$('#testBtn').addEventListener('click', async () => {
+  const d = $('#testDomain').value.trim();
+  if (!d) return toast('请输入域名', '', 'err');
+  const box = $('#testResult');
+  box.className = 'test-result';
+  box.innerHTML = '<span class="spin"></span> 正在解析…';
+  try {
+    const p = $('#testProfile').value;
+    const r = await api('/api/test?domain=' + encodeURIComponent(d) + '&profile=' + encodeURIComponent(p));
+    if (r.ok){
+      box.className = 'test-result ok';
+      box.innerHTML = `<b>${esc(d)}</b> → ${r.ips.map(ip => `<span class="chip">${esc(ip)}</span>`).join(' ')}<br/>
+        <span class="muted">配置 ${esc(r.profileName)} · 上游 ${esc(r.upstream || '—')} · ${Math.round(r.latencyMs)} ms</span>`;
+    } else {
+      box.className = 'test-result bad';
+      box.innerHTML = `<b>${esc(d)}</b> 解析失败：${esc(r.status)}（rcode ${r.rcode}）<br/>
+        <span class="muted">配置 ${esc(r.profileName || r.profileId)} · 上游 ${esc(r.upstream || '—')}</span>`;
+    }
+  } catch(e){
+    box.className = 'test-result bad';
+    box.textContent = '测试失败：' + e.message;
+  }
+});
+
+$('#applyTakeoverBtn').addEventListener('click', async () => {
+  if (!confirm('接管会修改当前所有网卡的 DNS 为 127.0.0.1 / ::1，程序退出时自动恢复。继续？')) return;
+  try {
+    const r = await api('/api/takeover', {method:'POST', body: JSON.stringify({action:'apply'})});
+    if (!r.ok) throw new Error((r.error || '接管失败') + (r.hint ? '。' + r.hint : ''));
+    toast('系统 DNS 已接管', r.message || '');
+    await refresh();
+  } catch(e){ toast('接管失败', e.message, 'err'); }
+});
+
+$('#restoreTakeoverBtn').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/takeover', {method:'POST', body: JSON.stringify({action:'restore'})});
+    if (!r.ok) throw new Error(r.error || '恢复失败');
+    toast('系统 DNS 已恢复', r.message || '');
+    await refresh();
+  } catch(e){ toast('恢复失败', e.message, 'err'); }
+});
+
+$('#elevateBtn').addEventListener('click', async () => {
+  if (!confirm('将以管理员身份重新启动程序（会短暂中断当前面板），继续？')) return;
+  try {
+    const r = await api('/api/elevate', {method:'POST', body: '{}'});
+    if (!r.ok) throw new Error(r.error || '提权失败');
+    toast('正在请求管理员权限', '请在 UAC 对话框确认；程序重启后本页面会自动重连');
+    setTimeout(() => location.reload(), 7000);
+  } catch(e){ toast('提权失败', e.message, 'err'); }
+});
+
+$('#saveSettingsBtn').addEventListener('click', async () => {
+  const body = {
+    defaultProfile: $('#setDefaultProfile').value,
+    cacheEnabled: $('#setCache').dataset.on === '1',
+    restoreOnExit: $('#setRestore').dataset.on === '1',
+    openBrowser: $('#setBrowser').dataset.on === '1',
+    nativeWindow: $('#setNative').dataset.on === '1',
+    proxyEnabled: $('#setProxy').dataset.on === '1',
+    minTtl: Number($('#setMinTtl').value),
+    maxTtl: Number($('#setMaxTtl').value),
+    queryTimeoutMs: Number($('#setTimeout').value),
+    proxyPort: Number($('#setProxyPort').value),
+    port: Number($('#setDnsPort').value),
+    httpPort: Number($('#setHttpPort').value)
+  };
+  try {
+    const r = await api('/api/settings', {method:'POST', body: JSON.stringify(body)});
+    if (!r.ok) throw new Error(r.error || '保存失败');
+    toast('设置已保存', r.needsRestart ? '端口修改将在重启后生效' : '已即时生效');
+    await refresh();
+  } catch(e){ toast('保存失败', e.message, 'err'); }
+});
+
+$('#clearCacheBtn').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/cache/clear', {method:'POST', body:'{}'});
+    if (!r.ok) throw new Error(r.error || '操作失败');
+    toast('缓存已清空');
+    await refresh();
+  } catch(e){ toast('操作失败', e.message, 'err'); }
+});
+
+$('#quitBtn').addEventListener('click', async () => {
+  if (!confirm('确认退出 DNS Pilot？若已接管系统 DNS，将自动恢复。')) return;
+  try {
+    await api('/api/quit', {method:'POST', body:'{}'});
+  } catch(e){}
+  document.body.innerHTML = '<div style="padding:60px;text-align:center;color:#8b9bb4">程序已退出，可以关闭此页面。</div>';
+});
+
+document.querySelectorAll('.switch').forEach(sw => {
+  sw.addEventListener('click', () => {
+    const on = sw.dataset.on === '1';
+    const labels = {setCache:'#setCacheLabel', setRestore:'#setRestoreLabel', setBrowser:'#setBrowserLabel', setNative:'#setNativeLabel', setProxy:'#setProxyLabel'};
+    setSwitch('#' + sw.id, !on, labels[sw.id] || null);
+  });
+});
+
+refresh();
+startPolling();
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# 构建产物
+/dnspilot.exe
+/dnspilot.pdb
+/dist/
+/build/
+*.log
+
+# 运行期配置（包含本机网卡 DNS，不随源码发布）
+/dnspilot.json
+
+# 由 tools/embed.py 在构建时生成
+/src/web_asset.h
+
+# 系统/编辑器
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
