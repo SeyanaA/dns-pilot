@@ -12,6 +12,7 @@
     --cyan:#38e1ff; --violet:#8b7bff; --green:#34d399; --amber:#fbbf24; --red:#fb7185;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    --chartGrid:rgba(148,163,184,.12); --chartText:rgba(230,237,247,.55);
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0}
@@ -182,6 +183,50 @@
   .empty{padding:26px 16px; text-align:center; color:var(--dim); font-size:12.5px}
   .spin{display:inline-block; width:10px; height:10px; border:2px solid rgba(56,225,255,.25); border-top-color:var(--cyan); border-radius:50%; animation:rot .7s linear infinite; vertical-align:-1px}
   @keyframes rot{to{transform:rotate(360deg)}}
+
+  /* 浅色主题（顶栏按钮切换，localStorage 记忆） */
+  body.light{
+    --bg:#f5f7fa; --bg2:#ffffff; --card:#ffffff; --card2:#f8fafc;
+    --line:rgba(15,23,42,.10); --line2:rgba(15,23,42,.18);
+    --txt:#1b2433; --muted:#5b6b80; --dim:#6b7a91;
+    --cyan:#0b7f96; --violet:#6d5be0; --green:#0f7a57; --amber:#a6660f; --red:#b42342;
+    --chartGrid:rgba(15,23,42,.10); --chartText:rgba(27,36,51,.55);
+    background:
+      radial-gradient(1100px 500px at 12% -10%, rgba(11,127,150,.08), transparent 60%),
+      radial-gradient(900px 500px at 88% -20%, rgba(109,91,224,.07), transparent 60%),
+      var(--bg);
+  }
+  body.light .topbar{background:rgba(255,255,255,.82)}
+  body.light .pill{background:rgba(255,255,255,.9)}
+  body.light .btn{background:#fff}
+  body.light .btn:hover{background:#f1f6fb}
+  body.light .btn.primary{background:linear-gradient(135deg,rgba(11,127,150,.10),rgba(109,91,224,.10)); border-color:rgba(11,127,150,.30)}
+  body.light .btn.danger{color:#b42342}
+  body.light .kpi{background:linear-gradient(160deg,var(--card2),var(--card))}
+  body.light .card{background:linear-gradient(170deg,#ffffff,#f8fafc)}
+  body.light thead th{background:rgba(248,250,252,.98)}
+  body.light tbody td{border-bottom-color:rgba(15,23,42,.06)}
+  body.light tbody tr:hover{background:rgba(11,127,150,.05)}
+  body.light .domain{color:#1e3a5f}
+  body.light .tops .name{color:#243b53}
+  body.light .form-row{background:#f8fafc}
+  body.light input[type=text], body.light input[type=number], body.light select{background:#fff}
+  body.light .switch{background:rgba(15,23,42,.12)}
+  body.light .switch:after{background:#fff}
+  body.light .switch.on{background:rgba(15,122,87,.22)}
+  body.light .chip{background:rgba(11,127,150,.07); border-color:rgba(11,127,150,.20); color:#0b6d82}
+  body.light .banner{background:rgba(255,255,255,.75)}
+  body.light .banner.warn{background:rgba(166,102,15,.06); border-color:rgba(166,102,15,.30)}
+  body.light .toast{background:#fff; box-shadow:0 12px 34px rgba(15,23,42,.15)}
+  body.light .test-result{background:#fff}
+  body.light .badge.dns{color:#0b6d82; border-color:rgba(11,127,150,.28); background:rgba(11,127,150,.07)}
+  body.light .badge.proxy{color:#5b4bc4; border-color:rgba(109,91,224,.30); background:rgba(109,91,224,.08)}
+  body.light .badge.domain-rule, body.light .badge.hit{color:#0f7a57; border-color:rgba(15,122,87,.28); background:rgba(15,122,87,.07)}
+  body.light .badge.app-rule{color:#8a5a00; border-color:rgba(166,102,15,.28); background:rgba(166,102,15,.07)}
+  body.light .lat.good{color:#0f7a57} body.light .lat.mid{color:#8a5a00} body.light .lat.bad{color:#b42342}
+  body.light .icon-btn:hover{color:#b42342; border-color:rgba(180,35,66,.4); background:rgba(180,35,66,.06)}
+  body.light .logo{filter:drop-shadow(0 0 10px rgba(11,127,150,.25))}
+
   @media (max-width:1080px){
     .kpis{grid-template-columns:repeat(2,1fr)}
     .grid{grid-template-columns:1fr}
@@ -224,6 +269,7 @@
     <span class="pill" id="cachePill">缓存 <b id="cacheState">—</b></span>
   </div>
   <div class="tools">
+    <button class="btn ghost sm" id="themeBtn" title="切换浅色/深色">☾</button>
     <button class="btn ghost sm" id="pauseBtn">暂停</button>
     <button class="btn sm" id="refreshBtn">刷新</button>
   </div>
@@ -250,6 +296,16 @@
       <div class="label">代理连接</div>
       <div class="value" id="kpiProxy">0</div>
       <div class="sub" id="kpiProxySub">按应用解析次数</div>
+    </div>
+  </section>
+
+  <section class="banner warn" id="monitorHint" style="display:none">
+    <div>
+      <h3 id="monitorHintTitle">还没有 DNS 查询经过本程序</h3>
+      <p id="monitorHintText">接管系统 DNS 后，所有应用的查询才会经过本程序。</p>
+    </div>
+    <div class="actions" style="margin:0 0 0 auto">
+      <button class="btn primary sm" id="monitorHintBtn">去系统接管</button>
     </div>
   </section>
 
@@ -534,6 +590,26 @@ let lastUpdate = 0;
 let pollTimer = null;
 let tab = 'rules';
 let profileSignature = '';
+const THEME_KEY = 'dnspilot.theme';
+let themeFromState = false;
+
+function applyWebTheme(mode, persist){
+  const light = mode !== 'dark';
+  document.body.classList.toggle('light', light);
+  const btn = $('#themeBtn');
+  if (btn){
+    btn.textContent = light ? '☾' : '☀';
+    btn.title = light ? '切换为深色' : '切换为浅色';
+  }
+  if (persist) localStorage.setItem(THEME_KEY, light ? 'light' : 'dark');
+  if (state) drawChart(state.stats.timeline);
+}
+
+function initTheme(){
+  const saved = localStorage.getItem(THEME_KEY);
+  applyWebTheme(saved === 'dark' ? 'dark' : 'light', false);
+  themeFromState = !!saved;
+}
 
 function esc(v){
   return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -635,11 +711,32 @@ function renderKpis(){
   $('#kpiProxySub').textContent = '按应用解析次数';
 }
 
+function renderMonitorHint(){
+  const el = $('#monitorHint');
+  if (!el) return;
+  if ((state.stats.total || 0) > 0){ el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+  const t = state.takeover || {};
+  if (!t.active){
+    el.className = 'banner warn';
+    $('#monitorHintTitle').textContent = '还没有 DNS 查询经过本程序（系统 DNS 未接管）';
+    $('#monitorHintText').textContent = state.admin
+      ? '只运行程序不会自动监测系统 DNS。点右侧按钮接管，或让应用把 DNS/代理指向 127.0.0.1（代理端口 8899）。'
+      : '当前是普通用户，无法接管系统 DNS。请点“以管理员身份重启”后再接管，或让应用使用本机代理 127.0.0.1:8899。';
+    $('#monitorHintBtn').textContent = state.admin ? '去系统接管' : '查看系统接管';
+  } else {
+    el.className = 'banner';
+    $('#monitorHintTitle').textContent = '已接管系统 DNS，但还没有 DNS 查询';
+    $('#monitorHintText').textContent = '请确认应用正在访问网络，且网卡 DNS 指向 127.0.0.1 / ::1；代理流量请使用 127.0.0.1:8899。';
+    $('#monitorHintBtn').textContent = '查看系统接管';
+  }
+}
+
 function renderStream(){
   const events = (state.stats.events || []).slice(-40).reverse();
   const body = $('#liveBody');
   if (!events.length){
-    body.innerHTML = '<tr><td colspan="7"><div class="empty">还没有解析流量。打开一个网站，或使用“DNS 服务器 → 解析测试”。</div></td></tr>';
+    body.innerHTML = '<tr><td colspan="7"><div class="empty">还没有解析流量。若系统 DNS 未接管，请先接管或让应用使用本机代理 127.0.0.1:8899。</div></td></tr>';
     $('#streamMeta').textContent = '最近 200 条';
     return;
   }
@@ -676,7 +773,10 @@ function drawChart(timeline){
   const usable = h - top - padB;
   const barW = data.length ? w / data.length : w;
 
-  ctx.strokeStyle = 'rgba(148,163,184,.12)';
+  const cs = getComputedStyle(document.body);
+  const chartGrid = (cs.getPropertyValue('--chartGrid') || '').trim() || 'rgba(148,163,184,.12)';
+  const chartText = (cs.getPropertyValue('--chartText') || '').trim() || 'rgba(230,237,247,.55)';
+  ctx.strokeStyle = chartGrid;
   ctx.lineWidth = 1;
   for (let i = 1; i <= 3; i++){
     const y = top + usable * i / 3;
@@ -691,7 +791,7 @@ function drawChart(timeline){
     if (bh <= 0) return;
     ctx.fillRect(i * barW + Math.max(0.5, barW * .12), h - padB - bh, Math.max(1, barW * .76), bh);
   });
-  ctx.fillStyle = 'rgba(230,237,247,.55)';
+  ctx.fillStyle = chartText;
   ctx.font = '10px ui-monospace, monospace';
   ctx.fillText(max + ' req/s', 4, 11);
   const total = data.reduce((a, p) => a + p.count, 0);
@@ -819,6 +919,7 @@ function render(){
   if (!state) return;
   renderPills();
   renderKpis();
+  renderMonitorHint();
   renderStream();
   drawChart(state.stats.timeline);
   renderTops();
@@ -837,6 +938,10 @@ async function refresh(){
     const data = await api('/api/state');
     if (data.ok !== false){
       state = data;
+      if (!themeFromState && data.config && data.config.ui){
+        applyWebTheme(data.config.ui.theme === 'dark' ? 'dark' : 'light', false);
+      }
+      themeFromState = true;
       lastUpdate = Date.now();
       render();
       errorCount = 0;
@@ -868,6 +973,17 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
     if (tab === 'dns') { syncProfileSelects(); }
   });
+});
+
+$('#monitorHintBtn').addEventListener('click', () => {
+  const btn = document.querySelector('.tab-btn[data-tab="takeover"]');
+  if (btn) btn.click();
+});
+
+$('#themeBtn').addEventListener('click', () => {
+  const nowLight = document.body.classList.contains('light');
+  applyWebTheme(nowLight ? 'dark' : 'light', true);
+  themeFromState = true;
 });
 
 $('#pauseBtn').addEventListener('click', () => {
@@ -1050,6 +1166,7 @@ document.querySelectorAll('.switch').forEach(sw => {
   });
 });
 
+initTheme();
 refresh();
 startPolling();
 </script>

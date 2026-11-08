@@ -262,6 +262,16 @@ inline bool isAdmin() {
     return ok;
 }
 
+// 程序图标（资源 ID 1，见 src/app.rc）；资源缺失时回退系统默认图标
+inline HICON appIcon() {
+    static HICON cached = nullptr;
+    if (!cached) {
+        cached = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
+        if (!cached) cached = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+    }
+    return cached;
+}
+
 // 以隐藏窗口执行命令（直接 CreateProcessW，避免 shell 拼接）
 inline bool runHidden(const std::wstring &exe, const std::wstring &args, DWORD &exitCode) {
     std::wstring cmd = exe + L" " + args;

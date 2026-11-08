@@ -1,0 +1,4 @@
+#include <windows.h>
+
+// 程序图标（资源 ID 1）：Explorer、任务栏、窗口与快捷方式共用
+1 ICON "../assets/dnspilot.ico"

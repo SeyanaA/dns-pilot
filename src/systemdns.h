@@ -29,6 +29,8 @@ class SystemDns {
     static std::vector<std::string> detectUpstreams();
 
     static bool apply(bool takeIpv6, std::vector<TakeoverBackup> &backup, TakeoverResult &res);
-    static bool restore(const std::vector<TakeoverBackup> &backup, TakeoverResult &res);
+    // fallback4：备份无效（仅含环回/为空）时用于 IPv4 的恢复地址，通常取当前 system 配置探测到的 DNS
+    static bool restore(const std::vector<TakeoverBackup> &backup, TakeoverResult &res,
+                        const std::vector<std::string> &fallback4 = {});
     static void flushDns();
 };

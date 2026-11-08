@@ -3,6 +3,8 @@
 ; 安装前会优雅关闭正在运行的 DNS Pilot（它会按设置恢复系统 DNS）
 
 Unicode true
+!define MUI_ICON "..\assets\dnspilot.ico"
+!define MUI_UNICON "..\assets\dnspilot.ico"
 !include "MUI2.nsh"
 !include "WinMessages.nsh"
 !include "LogicLib.nsh"
@@ -12,7 +14,7 @@ Unicode true
 !define LANG_EN 1033
 
 !define APP_NAME "DNS Pilot"
-!define APP_VERSION "1.1.2"
+!define APP_VERSION "1.1.3"
 !define APP_EXE "dnspilot.exe"
 !define APP_PUBLISHER "DNS Pilot"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DNSPilot"
@@ -29,7 +31,7 @@ ManifestDPIAware true
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "1.1.2.0"
+VIProductVersion "1.1.3.0"
 VIAddVersionKey "ProductName" "${APP_NAME}"
 VIAddVersionKey "FileDescription" "${APP_NAME} 安装程序"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"

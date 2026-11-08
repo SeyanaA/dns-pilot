@@ -89,7 +89,8 @@ struct TransferStats {
     int rulesSkipped = 0;  // 重复或引用了无效配置
 };
 
-js::Value configExportBundle(const Config &c, const std::string &appVersion);
+js::Value configExportBundle(const Config &c, const std::string &appVersion,
+                             const std::string &onlyProfile = "");
 bool configImportBundle(const js::Value &v, Config &c, TransferStats &st, std::string &err);
 
 class ConfigStore {

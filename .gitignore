@@ -11,6 +11,9 @@
 # 由 tools/embed.py 在构建时生成
 /src/web_asset.h
 
+# 图标预览（tools/make_icon.py 生成，源文件是 assets/dnspilot.ico）
+/assets/dnspilot-*.png
+
 # 系统/编辑器
 Thumbs.db
 desktop.ini

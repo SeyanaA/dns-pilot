@@ -282,23 +282,35 @@ static js::Value ruleToJson(const Rule &r) {
     return o;
 }
 
-js::Value configExportBundle(const Config &c, const std::string &appVersion) {
+js::Value configExportBundle(const Config &c, const std::string &appVersion,
+                             const std::string &onlyProfile) {
+    const Profile *one = nullptr;
+    if (!onlyProfile.empty()) {
+        for (auto &p : c.profiles)
+            if (p.id == onlyProfile) { one = &p; break; }
+        if (!one) return js::Value();  // 指定配置不存在
+    }
+
     js::Value v = js::Value::objV();
     v["format"] = js::Value::strV("dnspilot-export");
     v["version"] = js::Value::numV(1);
     v["appVersion"] = js::Value::strV(appVersion);
-    v["defaultProfile"] = js::Value::strV(c.defaultProfile);
+    // 单个配置导出不带默认配置，避免导入方被改成这个配置
+    v["defaultProfile"] = js::Value::strV(one ? "" : c.defaultProfile);
 
     js::Value ps = js::Value::arrV();
-    for (auto &p : c.profiles) ps.arr.push_back(profileToJson(p));
+    if (one) ps.arr.push_back(profileToJson(*one));
+    else
+        for (auto &p : c.profiles) ps.arr.push_back(profileToJson(p));
     v["profiles"] = ps;
 
     js::Value apps = js::Value::arrV();
-    for (auto &r : c.appRules) apps.arr.push_back(ruleToJson(r));
-    v["appRules"] = apps;
-
     js::Value domains = js::Value::arrV();
-    for (auto &r : c.domainRules) domains.arr.push_back(ruleToJson(r));
+    if (!one) {
+        for (auto &r : c.appRules) apps.arr.push_back(ruleToJson(r));
+        for (auto &r : c.domainRules) domains.arr.push_back(ruleToJson(r));
+    }
+    v["appRules"] = apps;
     v["domainRules"] = domains;
     return v;
 }

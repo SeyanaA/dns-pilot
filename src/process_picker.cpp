@@ -1686,6 +1686,9 @@ bool RegisterPickerClass(HINSTANCE inst) {
     wc.lpfnWndProc = PickerWndProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
+    wc.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
+    if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.hIconSm = wc.hIcon;
     wc.hbrBackground = nullptr;
     wc.lpszClassName = L"DnsPilot.ProcessPicker";
 

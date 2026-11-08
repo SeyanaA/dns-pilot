@@ -134,7 +134,9 @@ enum {
     A_LOOKUP_EXE,
     A_LOOKUP_DOMAIN,
     A_EXPORT_CONFIG,
+    A_EXPORT_PROFILE,
     A_IMPORT_CONFIG,
+    A_OPEN_PANEL,
 };
 
 enum { ID_TIMER = 1, ID_CHART = 100 };
@@ -173,6 +175,9 @@ struct UIState {
     // 绑定查询页的输入（只读查询，不写配置）
     std::wstring lookupExe;
     std::wstring lookupDomain;
+    // 关闭确认：系统注销/关机时不再弹窗；避免重复打开确认框
+    bool sessionEnding = false;
+    bool closePromptOpen = false;
 
     FontFamily *family = nullptr;
     Font *fH1 = nullptr;
@@ -926,7 +931,7 @@ bool ShowForm(HWND owner, const std::wstring &title, std::vector<FormItem> items
         wc.lpfnWndProc = FormProc;
         wc.hInstance = uiState.inst;
         wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
-        wc.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+        wc.hIcon = util::appIcon();
         wc.hIconSm = wc.hIcon;
         wc.hbrBackground = nullptr;  // 背景由 WM_ERASEBKGND 按主题填充
         wc.lpszClassName = L"DNSPilotForm";
@@ -957,9 +962,9 @@ bool ShowForm(HWND owner, const std::wstring &title, std::vector<FormItem> items
     if (!dlg) return false;
     SetWindowTextW(dlg, st.title.c_str());
     SendMessageW(dlg, WM_SETICON, ICON_SMALL,
-                 (LPARAM)LoadIconW(nullptr, MAKEINTRESOURCEW(32512)));
+                 (LPARAM)util::appIcon());
     SendMessageW(dlg, WM_SETICON, ICON_BIG,
-                 (LPARAM)LoadIconW(nullptr, MAKEINTRESOURCEW(32512)));
+                 (LPARAM)util::appIcon());
     // 系统标题栏按当前主题着色（浅色为白底深字）
     applyDwmTheme(dlg);
     ShowWindow(dlg, SW_SHOW);
@@ -1458,7 +1463,8 @@ void openDomainLookupDialog() {    std::vector<FormItem> items;
 
 // ---------------------------------------------------------------- 配置导出 / 导入
 
-std::wstring pickSaveFile(HWND owner, const std::wstring &suggested) {
+std::wstring pickSaveFile(HWND owner, const std::wstring &suggested,
+                          const wchar_t *title = L"导出 DNS 配置与绑定") {
     wchar_t buf[MAX_PATH] = {};
     lstrcpynW(buf, suggested.c_str(), MAX_PATH);
     OPENFILENAMEW ofn{};
@@ -1468,7 +1474,7 @@ std::wstring pickSaveFile(HWND owner, const std::wstring &suggested) {
     ofn.lpstrFile = buf;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrDefExt = L"json";
-    ofn.lpstrTitle = L"导出 DNS 配置与绑定";
+    ofn.lpstrTitle = title;
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetSaveFileNameW(&ofn)) return L"";
     return buf;
@@ -1504,24 +1510,264 @@ void exportConfigFile() {
         msgErr(uiState.hwnd, L"无法写入文件：\n" + path);
         return;
     }
-    toast(L"已导出 " + std::to_wstring(c.profiles.size()) + L" 个 DNS 配置、" +
+    toast(L"已全量导出 " + std::to_wstring(c.profiles.size()) + L" 个 DNS 配置、" +
           std::to_wstring(c.appRules.size() + c.domainRules.size()) + L" 条规则");
 }
 
-void importConfigFile() {
-    std::wstring path = pickOpenFile(uiState.hwnd);
+// ---------------------------------------------------------------- 导出单个配置
+// 列出可导出的 DNS 配置（排除 system 与规则专用 auto），选中后只导出该配置，不含规则。
+
+struct ExportPickState {
+    HWND hwnd = nullptr;
+    HWND list = nullptr;
+    RECT btnOk{};
+    RECT btnCancel{};
+    int hot = 0;
+    int result = -1;
+    std::vector<std::wstring> names;
+};
+
+enum { ID_EXPORT_LIST = 2001 };
+
+LRESULT CALLBACK ExportPickProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto *st = (ExportPickState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    switch (msg) {
+        case WM_NCCREATE: {
+            auto *cs = (CREATESTRUCTW *)lp;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+            return TRUE;
+        }
+        case WM_CREATE: {
+            auto *s = (ExportPickState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            s->hwnd = hwnd;
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int w = rc.right, h = rc.bottom;
+            s->btnCancel = {w - S(196), h - S(56), w - S(108), h - S(18)};
+            s->btnOk = {w - S(100), h - S(56), w - S(28), h - S(18)};
+            s->list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY |
+                                          LBS_NOINTEGRALHEIGHT | LBS_WANTKEYBOARDINPUT,
+                                      S(24), S(88), w - S(48), h - S(88) - S(74), hwnd,
+                                      (HMENU)(INT_PTR)ID_EXPORT_LIST, uiState.inst, nullptr);
+            SendMessageW(s->list, WM_SETFONT, (WPARAM)uiState.editFont, TRUE);
+            for (auto &n : s->names) SendMessageW(s->list, LB_ADDSTRING, 0, (LPARAM)n.c_str());
+            if (!s->names.empty()) SendMessageW(s->list, LB_SETCURSEL, 0, 0);
+            SetFocus(s->list);
+            return 0;
+        }
+        case WM_CTLCOLORLISTBOX: {
+            HDC dc = (HDC)wp;
+            SetTextColor(dc, RGB(kText.GetR(), kText.GetG(), kText.GetB()));
+            SetBkColor(dc, RGB(kInputBg2.GetR(), kInputBg2.GetG(), kInputBg2.GetB()));
+            return (LRESULT)uiState.editBrush;
+        }
+        case WM_ERASEBKGND: {
+            RECT erc;
+            GetClientRect(hwnd, &erc);
+            FillRect((HDC)wp, &erc, uiState.formBrush);
+            return 1;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            Bitmap bmp(rc.right, rc.bottom);
+            Graphics g(&bmp);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+            SolidBrush bg(kBg);
+            g.FillRectangle(&bg, 0, 0, (INT)rc.right, (INT)rc.bottom);
+            str(g, L"导出单个配置", uiState.fH2, kText,
+                RectF((REAL)S(24), (REAL)S(18), (REAL)(rc.right - S(48)), (REAL)S(30)));
+            str(g, L"选择一个 DNS 配置导出；只包含该配置，不含应用/域名规则。", uiState.fSmall, kMuted,
+                RectF((REAL)S(24), (REAL)S(54), (REAL)(rc.right - S(48)), (REAL)S(20)));
+            auto drawBtn = [&](RECT r, const wchar_t *text, bool primary, bool hot) {
+                roundRect(g, RectF((REAL)r.left, (REAL)r.top, (REAL)(r.right - r.left),
+                                   (REAL)(r.bottom - r.top)),
+                          (REAL)S(7), primary ? kBtnPrimaryForm : (hot ? kBrowseHot : kBtnBg),
+                          primary ? kBtnPrimaryBorderForm : kLine2);
+                str(g, text, uiState.fSmall, primary ? kCyan : kText,
+                    RectF((REAL)r.left, (REAL)r.top, (REAL)(r.right - r.left), (REAL)(r.bottom - r.top)),
+                    StringAlignmentCenter);
+            };
+            drawBtn(st->btnCancel, L"取消", false, st->hot == 1);
+            drawBtn(st->btnOk, L"导出…", true, st->hot == 2);
+            Graphics screen(hdc);
+            screen.DrawImage(&bmp, 0, 0);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            int hot = 0;
+            if (PtInRect(&st->btnCancel, p)) hot = 1;
+            else if (PtInRect(&st->btnOk, p)) hot = 2;
+            if (hot != st->hot) {
+                st->hot = hot;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_SETCURSOR:
+            if (LOWORD(lp) == HTCLIENT) {
+                POINT p;
+                GetCursorPos(&p);
+                ScreenToClient(hwnd, &p);
+                if (PtInRect(&st->btnCancel, p) || PtInRect(&st->btnOk, p)) {
+                    SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));
+                    return TRUE;
+                }
+            }
+            break;
+        case WM_LBUTTONDOWN: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (PtInRect(&st->btnCancel, p)) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            if (PtInRect(&st->btnOk, p)) {
+                LRESULT sel = SendMessageW(st->list, LB_GETCURSEL, 0, 0);
+                if (sel != LB_ERR) st->result = (int)sel;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            return 0;
+        }
+        case WM_VKEYTOITEM:
+            if (LOWORD(wp) == VK_RETURN) {
+                LRESULT sel = SendMessageW(st->list, LB_GETCURSEL, 0, 0);
+                if (sel != LB_ERR) st->result = (int)sel;
+                DestroyWindow(hwnd);
+                return -2;
+            }
+            if (LOWORD(wp) == VK_ESCAPE) {
+                DestroyWindow(hwnd);
+                return -2;
+            }
+            break;
+        case WM_COMMAND:
+            if (LOWORD(wp) == ID_EXPORT_LIST && HIWORD(wp) == LBN_DBLCLK) {
+                LRESULT sel = SendMessageW(st->list, LB_GETCURSEL, 0, 0);
+                if (sel != LB_ERR) st->result = (int)sel;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+int showExportProfilePicker(HWND owner, const std::vector<const Profile *> &profiles) {
+    static bool clsDone = false;
+    if (!clsDone) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = ExportPickProc;
+        wc.hInstance = uiState.inst;
+        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+        wc.hIcon = util::appIcon();
+        wc.hIconSm = wc.hIcon;
+        wc.hbrBackground = nullptr;
+        wc.lpszClassName = L"DNSPilotExportPick";
+        RegisterClassExW(&wc);
+        clsDone = true;
+    }
+    ExportPickState st;
+    for (auto *p : profiles) {
+        std::wstring row = util::w(p->name);
+        if (!p->servers.empty()) row += L"  ·  " + util::w(p->servers[0]);
+        st.names.push_back(row);
+    }
+    int w = S(600);
+    int h = S(470);
+    RECT orc;
+    GetWindowRect(owner, &orc);
+    int x = orc.left + ((orc.right - orc.left) - w) / 2;
+    int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
+    if (y < 20) y = 20;
+    HWND dlg = CreateWindowExW(0, L"DNSPilotExportPick", L"导出单个配置",
+                               WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, owner, nullptr,
+                               uiState.inst, &st);
+    if (!dlg) return -1;
+    SendMessageW(dlg, WM_SETICON, ICON_SMALL, (LPARAM)util::appIcon());
+    SendMessageW(dlg, WM_SETICON, ICON_BIG, (LPARAM)util::appIcon());
+    applyDwmTheme(dlg);
+    ShowWindow(dlg, SW_SHOW);
+    UpdateWindow(dlg);
+    EnableWindow(owner, FALSE);
+    SetForegroundWindow(dlg);
+    MSG msg;
+    while (IsWindow(dlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (!IsDialogMessageW(dlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(owner, TRUE);
+    SetForegroundWindow(owner);
+    return st.result;
+}
+
+void exportSingleProfile() {
+    Config c = uiState.ctx->cfg->snapshot();
+    std::vector<const Profile *> cands;
+    for (auto &p : c.profiles) {
+        if (p.provider == "system" || p.provider == "auto") continue;
+        cands.push_back(&p);
+    }
+    if (cands.empty()) {
+        msgErr(uiState.hwnd, L"没有可单独导出的 DNS 配置。\n系统默认和规则专用配置不能单独导出。");
+        return;
+    }
+    int idx = showExportProfilePicker(uiState.hwnd, cands);
+    if (idx < 0 || idx >= (int)cands.size()) return;
+    const Profile &p = *cands[idx];
+    js::Value bundle = configExportBundle(c, uiState.ctx->version, p.id);
+    if (!bundle.isObj()) {
+        msgErr(uiState.hwnd, L"导出失败：配置不存在");
+        return;
+    }
+
+    std::wstring id = util::w(p.id);
+    for (auto &ch : id) {
+        bool ok = (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z') ||
+                  (ch >= L'0' && ch <= L'9') || ch == L'-' || ch == L'_' || ch == L'.';
+        if (!ok) ch = L'-';
+    }
+    if (id.empty()) id = L"profile";
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t name[160];
+    swprintf(name, 160, L"dnspilot-%s-%04d%02d%02d.json", id.c_str(), st.wYear, st.wMonth, st.wDay);
+    std::wstring path = pickSaveFile(uiState.hwnd, name, L"导出单个 DNS 配置");
     if (path.empty()) return;
+
+    std::string text = bundle.dump(2) + "\n";
+    if (!util::fileWrite(narrow(path), text)) {
+        msgErr(uiState.hwnd, L"无法写入文件：\n" + path);
+        return;
+    }
+    toast(L"已导出配置：" + util::w(p.name));
+}
+
+bool importConfigPath(const std::wstring &path, HWND owner) {
+    if (path.empty()) return false;
 
     std::string text;
     if (!util::fileRead(narrow(path), text)) {
-        msgErr(uiState.hwnd, L"无法读取文件：\n" + path);
-        return;
+        msgErr(owner, L"无法读取文件：\n" + path);
+        return false;
     }
     js::Value bundle;
     std::string perr;
     if (!js::Value::parse(text, bundle, perr)) {
-        msgErr(uiState.hwnd, L"JSON 解析失败：" + util::w(perr));
-        return;
+        msgErr(owner, L"JSON 解析失败：" + util::w(perr));
+        return false;
     }
 
     TransferStats stats;
@@ -1537,23 +1783,444 @@ void importConfigFile() {
         },
         err);
     if (!accepted) {
-        msgErr(uiState.hwnd, L"导入失败：" + util::w(ierr));
-        return;
+        msgErr(owner, L"导入失败：" + util::w(ierr));
+        return false;
     }
     if (!saved) {
-        msgErr(uiState.hwnd, L"导入失败：" + util::w(err));
-        return;
+        msgErr(owner, L"导入失败：" + util::w(err));
+        return false;
     }
 
     refreshData();
     InvalidateRect(uiState.hwnd, nullptr, FALSE);
-    MessageBoxW(uiState.hwnd,
+    MessageBoxW(owner,
                 (L"导入完成。\n\n新增 DNS 配置：" + std::to_wstring(stats.profilesAdded) +
                  L" 个（复用已有 " + std::to_wstring(stats.profilesReused) + L" 个）\n" +
                  L"新增规则：" + std::to_wstring(stats.rulesAdded) + L" 条\n" +
                  L"跳过：" + std::to_wstring(stats.rulesSkipped) + L" 条（重复或引用了无效配置）")
                     .c_str(),
                 L"DNS Pilot", MB_OK | MB_ICONINFORMATION);
+    return true;
+}
+
+// ---------------------------------------------------------------- 导入配置窗口
+// 点击「导入配置…」打开：提示把导出的 JSON 拖入窗口，或点「选择文件…」。
+// 拖放只在这个窗口内生效，主界面不直接接收拖放。
+
+struct ImportDlgState {
+    HWND hwnd = nullptr;
+    RECT dropZone{};
+    RECT btnPick{};
+    RECT btnCancel{};
+    int hot = 0;  // 1=选择文件，2=取消
+};
+
+#ifndef WM_COPYGLOBALDATA
+#define WM_COPYGLOBALDATA 0x0049
+#endif
+
+void enableFileDrop(HWND hwnd) {
+    DragAcceptFiles(hwnd, TRUE);
+    // 提权运行时放行来自资源管理器（普通权限）的拖放消息
+    ChangeWindowMessageFilterEx(hwnd, WM_DROPFILES, MSGFLT_ALLOW, nullptr);
+    ChangeWindowMessageFilterEx(hwnd, WM_COPYGLOBALDATA, MSGFLT_ALLOW, nullptr);
+    ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, nullptr);
+}
+
+std::wstring takeDropPath(HDROP drop, UINT &count) {
+    count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+    if (count != 1) {
+        DragFinish(drop);
+        return {};
+    }
+    UINT len = DragQueryFileW(drop, 0, nullptr, 0);
+    std::wstring path((size_t)len + 1, L'\0');
+    UINT copied = DragQueryFileW(drop, 0, &path[0], len + 1);
+    DragFinish(drop);
+    path.resize(copied);
+    return path;
+}
+
+void importDlgPickFile(ImportDlgState &st) {
+    std::wstring path = pickOpenFile(st.hwnd);
+    if (path.empty()) return;
+    if (importConfigPath(path, st.hwnd)) DestroyWindow(st.hwnd);
+}
+
+LRESULT CALLBACK ImportDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto *st = (ImportDlgState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    switch (msg) {
+        case WM_NCCREATE: {
+            auto *cs = (CREATESTRUCTW *)lp;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+            return TRUE;
+        }
+        case WM_CREATE: {
+            auto *s = (ImportDlgState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            s->hwnd = hwnd;
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int w = rc.right, h = rc.bottom;
+            s->dropZone = {S(28), S(140), w - S(28), S(244)};
+            s->btnCancel = {w - S(116), h - S(56), w - S(28), h - S(18)};
+            s->btnPick = {w - S(250), h - S(56), w - S(128), h - S(18)};
+            enableFileDrop(hwnd);
+            SetFocus(hwnd);
+            return 0;
+        }
+        case WM_ERASEBKGND: {
+            RECT erc;
+            GetClientRect(hwnd, &erc);
+            FillRect((HDC)wp, &erc, uiState.formBrush);
+            return 1;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            Bitmap bmp(rc.right, rc.bottom);
+            Graphics g(&bmp);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+            SolidBrush bg(kBg);
+            g.FillRectangle(&bg, 0, 0, (INT)rc.right, (INT)rc.bottom);
+
+            str(g, L"导入 DNS 配置", uiState.fH2, kText,
+                RectF((REAL)S(28), (REAL)S(20), (REAL)(rc.right - S(56)), (REAL)S(30)));
+            str(g, L"把 DNS Pilot 导出的 JSON 配置文件拖入下方区域，", uiState.fBody, kMuted,
+                RectF((REAL)S(28), (REAL)S(62), (REAL)(rc.right - S(56)), (REAL)S(22)));
+            str(g, L"或点击「选择文件…」从磁盘选择。一次只能导入一个文件。", uiState.fBody, kMuted,
+                RectF((REAL)S(28), (REAL)S(86), (REAL)(rc.right - S(56)), (REAL)S(22)));
+            str(g, L"导入为合并操作：不会删除现有配置，重复项自动跳过。", uiState.fTiny, kDim,
+                RectF((REAL)S(28), (REAL)S(112), (REAL)(rc.right - S(56)), (REAL)S(18)));
+
+            RECT dz = st->dropZone;
+            roundRect(g, RectF((REAL)dz.left, (REAL)dz.top, (REAL)(dz.right - dz.left),
+                               (REAL)(dz.bottom - dz.top)),
+                      (REAL)S(10), kSelectBg);
+            Pen dash(Color(150, kCyan.GetR(), kCyan.GetG(), kCyan.GetB()), (REAL)S(2));
+            dash.SetDashStyle(DashStyleDash);
+            g.DrawRectangle(&dash, (INT)(dz.left + S(1)), (INT)(dz.top + S(1)),
+                            (INT)(dz.right - dz.left - S(2)), (INT)(dz.bottom - dz.top - S(2)));
+            str(g, L"拖放配置文件到这里", uiState.fBody, kText,
+                RectF((REAL)dz.left, (REAL)(dz.top + S(24)), (REAL)(dz.right - dz.left), (REAL)S(26)),
+                StringAlignmentCenter);
+            str(g, L"支持 DNS Pilot 导出的 .json 文件", uiState.fTiny, kDim,
+                RectF((REAL)dz.left, (REAL)(dz.top + S(54)), (REAL)(dz.right - dz.left), (REAL)S(20)),
+                StringAlignmentCenter);
+
+            auto drawBtn = [&](RECT r, const wchar_t *text, bool primary, bool hot) {
+                roundRect(g, RectF((REAL)r.left, (REAL)r.top, (REAL)(r.right - r.left),
+                                   (REAL)(r.bottom - r.top)),
+                          (REAL)S(7), primary ? kBtnPrimaryForm : (hot ? kBrowseHot : kBtnBg),
+                          primary ? kBtnPrimaryBorderForm : kLine2);
+                str(g, text, uiState.fSmall, primary ? kCyan : kText,
+                    RectF((REAL)r.left, (REAL)r.top, (REAL)(r.right - r.left), (REAL)(r.bottom - r.top)),
+                    StringAlignmentCenter);
+            };
+            drawBtn(st->btnPick, L"选择文件…", true, st->hot == 1);
+            drawBtn(st->btnCancel, L"取消", false, st->hot == 2);
+            str(g, L"按 Esc 取消", uiState.fTiny, kDim,
+                RectF((REAL)S(28), (REAL)(rc.bottom - S(46)), (REAL)S(160), (REAL)S(18)));
+
+            Graphics screen(hdc);
+            screen.DrawImage(&bmp, 0, 0);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            int hot = 0;
+            if (PtInRect(&st->btnPick, p)) hot = 1;
+            else if (PtInRect(&st->btnCancel, p)) hot = 2;
+            if (hot != st->hot) {
+                st->hot = hot;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_SETCURSOR:
+            if (LOWORD(lp) == HTCLIENT) {
+                POINT p;
+                GetCursorPos(&p);
+                ScreenToClient(hwnd, &p);
+                if (PtInRect(&st->btnPick, p) || PtInRect(&st->btnCancel, p)) {
+                    SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));  // IDC_HAND
+                    return TRUE;
+                }
+            }
+            break;
+        case WM_LBUTTONDOWN: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (PtInRect(&st->btnCancel, p)) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            if (PtInRect(&st->btnPick, p)) {
+                importDlgPickFile(*st);
+                return 0;
+            }
+            return 0;
+        }
+        case WM_DROPFILES: {
+            UINT count = 0;
+            std::wstring path = takeDropPath((HDROP)wp, count);
+            if (count > 1) {
+                msgErr(hwnd, L"一次只能导入一个配置文件。");
+                return 0;
+            }
+            if (!path.empty() && importConfigPath(path, hwnd)) DestroyWindow(hwnd);
+            return 0;
+        }
+        case WM_KEYDOWN:
+            if (wp == VK_ESCAPE) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void showImportDialog(HWND owner) {
+    static bool clsDone = false;
+    if (!clsDone) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = ImportDlgProc;
+        wc.hInstance = uiState.inst;
+        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+        wc.hIcon = util::appIcon();
+        wc.hIconSm = wc.hIcon;
+        wc.hbrBackground = nullptr;  // 背景由 WM_ERASEBKGND 按主题填充
+        wc.lpszClassName = L"DNSPilotImport";
+        RegisterClassExW(&wc);
+        clsDone = true;
+    }
+    ImportDlgState st;
+    int w = S(560);
+    int h = S(380);
+    RECT orc;
+    GetWindowRect(owner, &orc);
+    int x = orc.left + ((orc.right - orc.left) - w) / 2;
+    int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
+    if (y < 20) y = 20;
+    HWND dlg = CreateWindowExW(0, L"DNSPilotImport", L"导入 DNS 配置",
+                               WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, owner, nullptr,
+                               uiState.inst, &st);
+    if (!dlg) return;
+    SendMessageW(dlg, WM_SETICON, ICON_SMALL, (LPARAM)util::appIcon());
+    SendMessageW(dlg, WM_SETICON, ICON_BIG, (LPARAM)util::appIcon());
+    applyDwmTheme(dlg);
+    ShowWindow(dlg, SW_SHOW);
+    UpdateWindow(dlg);
+    EnableWindow(owner, FALSE);
+    SetForegroundWindow(dlg);
+    MSG msg;
+    while (IsWindow(dlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (!IsDialogMessageW(dlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(owner, TRUE);
+    SetForegroundWindow(owner);
+}
+
+void importConfigFile() {
+    showImportDialog(uiState.hwnd);
+}
+
+// ---------------------------------------------------------------- 关闭确认
+// 点标题栏 X / Alt+F4 时询问：最小化到任务栏继续运行，还是直接退出程序。
+
+struct CloseDlgState {
+    HWND hwnd = nullptr;
+    RECT btnMin{};
+    RECT btnExit{};
+    RECT btnCancel{};
+    int hot = 0;     // 1=最小化 2=退出 3=取消
+    int result = 0;  // 0=取消 1=最小化 2=退出
+};
+
+LRESULT CALLBACK CloseDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto *st = (CloseDlgState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    switch (msg) {
+        case WM_NCCREATE: {
+            auto *cs = (CREATESTRUCTW *)lp;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+            return TRUE;
+        }
+        case WM_CREATE: {
+            auto *s = (CloseDlgState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            s->hwnd = hwnd;
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int w = rc.right, h = rc.bottom;
+            s->btnCancel = {w - S(110), h - S(56), w - S(28), h - S(18)};
+            s->btnExit = {w - S(260), h - S(56), w - S(120), h - S(18)};
+            s->btnMin = {w - S(450), h - S(56), w - S(270), h - S(18)};
+            SetFocus(hwnd);
+            return 0;
+        }
+        case WM_ERASEBKGND: {
+            RECT erc;
+            GetClientRect(hwnd, &erc);
+            FillRect((HDC)wp, &erc, uiState.formBrush);
+            return 1;
+        }
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            Bitmap bmp(rc.right, rc.bottom);
+            Graphics g(&bmp);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+            SolidBrush bg(kBg);
+            g.FillRectangle(&bg, 0, 0, (INT)rc.right, (INT)rc.bottom);
+            str(g, L"关闭 DNS Pilot", uiState.fH2, kText,
+                RectF((REAL)S(28), (REAL)S(22), (REAL)(rc.right - S(56)), (REAL)S(30)));
+            str(g, L"要最小化到任务栏继续运行，还是直接退出程序？", uiState.fBody, kMuted,
+                RectF((REAL)S(28), (REAL)S(70), (REAL)(rc.right - S(56)), (REAL)S(22)));
+            str(g, L"直接退出会按设置恢复系统 DNS；最小化不会中断接管。", uiState.fTiny, kDim,
+                RectF((REAL)S(28), (REAL)S(98), (REAL)(rc.right - S(56)), (REAL)S(18)));
+
+            auto drawBtn = [&](RECT r, const wchar_t *text, bool primary, bool danger, bool hot) {
+                Color fill = primary ? kBtnPrimaryForm : (hot ? kBrowseHot : kBtnBg);
+                Color border = primary ? kBtnPrimaryBorderForm : kLine2;
+                roundRect(g, RectF((REAL)r.left, (REAL)r.top, (REAL)(r.right - r.left),
+                                   (REAL)(r.bottom - r.top)),
+                          (REAL)S(7), fill, border);
+                str(g, text, uiState.fSmall, primary ? kCyan : (danger ? kRed : kText),
+                    RectF((REAL)r.left, (REAL)r.top, (REAL)(r.right - r.left), (REAL)(r.bottom - r.top)),
+                    StringAlignmentCenter);
+            };
+            drawBtn(st->btnMin, L"最小化到任务栏", true, false, st->hot == 1);
+            drawBtn(st->btnExit, L"直接退出程序", false, true, st->hot == 2);
+            drawBtn(st->btnCancel, L"取消", false, false, st->hot == 3);
+
+            Graphics screen(hdc);
+            screen.DrawImage(&bmp, 0, 0);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_MOUSEMOVE: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            int hot = 0;
+            if (PtInRect(&st->btnMin, p)) hot = 1;
+            else if (PtInRect(&st->btnExit, p)) hot = 2;
+            else if (PtInRect(&st->btnCancel, p)) hot = 3;
+            if (hot != st->hot) {
+                st->hot = hot;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+        case WM_SETCURSOR:
+            if (LOWORD(lp) == HTCLIENT) {
+                POINT p;
+                GetCursorPos(&p);
+                ScreenToClient(hwnd, &p);
+                if (PtInRect(&st->btnMin, p) || PtInRect(&st->btnExit, p) || PtInRect(&st->btnCancel, p)) {
+                    SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));
+                    return TRUE;
+                }
+            }
+            break;
+        case WM_LBUTTONDOWN: {
+            POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (PtInRect(&st->btnMin, p)) st->result = 1;
+            else if (PtInRect(&st->btnExit, p)) st->result = 2;
+            else if (PtInRect(&st->btnCancel, p)) st->result = 0;
+            else return 0;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        case WM_KEYDOWN:
+            if (wp == VK_ESCAPE) {
+                st->result = 0;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            if (wp == VK_RETURN) {
+                st->result = 1;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        case WM_CLOSE:
+            st->result = 0;
+            DestroyWindow(hwnd);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+int showClosePrompt(HWND owner) {
+    static bool clsDone = false;
+    if (!clsDone) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = CloseDlgProc;
+        wc.hInstance = uiState.inst;
+        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+        wc.hIcon = util::appIcon();
+        wc.hIconSm = wc.hIcon;
+        wc.hbrBackground = nullptr;
+        wc.lpszClassName = L"DNSPilotClose";
+        RegisterClassExW(&wc);
+        clsDone = true;
+    }
+    if (IsIconic(owner)) ShowWindow(owner, SW_RESTORE);
+    CloseDlgState st;
+    int w = S(560);
+    int h = S(300);
+    RECT orc;
+    GetWindowRect(owner, &orc);
+    int x = orc.left + ((orc.right - orc.left) - w) / 2;
+    int y = orc.top + ((orc.bottom - orc.top) - h) / 2;
+    if (y < 20) y = 20;
+    HWND dlg = CreateWindowExW(0, L"DNSPilotClose", L"关闭 DNS Pilot",
+                               WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, owner, nullptr,
+                               uiState.inst, &st);
+    if (!dlg) return 2;  // 窗口创建失败时按“退出”处理
+    SendMessageW(dlg, WM_SETICON, ICON_SMALL, (LPARAM)util::appIcon());
+    SendMessageW(dlg, WM_SETICON, ICON_BIG, (LPARAM)util::appIcon());
+    applyDwmTheme(dlg);
+    ShowWindow(dlg, SW_SHOW);
+    UpdateWindow(dlg);
+    EnableWindow(owner, FALSE);
+    SetForegroundWindow(dlg);
+    MSG msg;
+    while (IsWindow(dlg) && GetMessageW(&msg, nullptr, 0, 0)) {
+        if (!IsDialogMessageW(dlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    EnableWindow(owner, TRUE);
+    SetForegroundWindow(owner);
+    return st.result;
+}
+
+void requestClose(HWND hwnd) {
+    if (uiState.sessionEnding) {
+        DestroyWindow(hwnd);
+        return;
+    }
+    if (uiState.closePromptOpen) return;
+    bool wasMin = IsIconic(hwnd) != 0;
+    uiState.closePromptOpen = true;
+    int r = showClosePrompt(hwnd);
+    uiState.closePromptOpen = false;
+    if (r == 1 || (r == 0 && wasMin)) ShowWindow(hwnd, SW_MINIMIZE);
+    else if (r == 2) DestroyWindow(hwnd);
 }
 
 void applyTakeover(bool restore) {
@@ -1562,6 +2229,11 @@ void applyTakeover(bool restore) {
         return;
     }
     if (!restore) {
+        if (uiState.ctx->cfg->takeover().active) {
+            msgErr(uiState.hwnd, L"系统 DNS 已接管。请先点「恢复原 DNS」，再重新接管；"
+                                 L"否则会把 127.0.0.1 当成原配置写入备份。");
+            return;
+        }
         if (uiState.cfg.resolver.port != 53) {
             msgErr(uiState.hwnd, L"系统接管要求解析端口为 53，当前为 " + std::to_wstring(uiState.cfg.resolver.port) +
                                L"。\n请在“设置”中修改端口并重启。");
@@ -1586,9 +2258,18 @@ void applyTakeover(bool restore) {
             msgErr(uiState.hwnd, L"没有可恢复的 DNS 备份");
             return;
         }
+        // 备份失效（仅含 127.0.0.1/::1）时的 IPv4 兜底：使用 system 配置里探测到的系统 DNS
+        std::vector<std::string> fallback;
+        for (auto &p : uiState.ctx->cfg->snapshot().profiles)
+            if (p.id == "system")
+                for (auto &s : p.servers)
+                    if (!util::isLoopbackHost(s)) fallback.push_back(s);
         TakeoverResult res;
-        if (!SystemDns::restore(tk.backup, res)) {
-            msgErr(uiState.hwnd, L"恢复失败：\n" + util::w(res.message));
+        if (!SystemDns::restore(tk.backup, res, fallback)) {
+            std::wstring detail = util::w(res.message);
+            for (auto &e : res.errors) detail += L"\n- " + util::w(e);
+            msgErr(uiState.hwnd, L"恢复失败：\n" + detail +
+                                     (res.errors.empty() ? L"" : L"\n备份已保留，可重试。"));
             return;
         }
         uiState.ctx->cfg->setTakeover(false, {});
@@ -1717,8 +2398,13 @@ void paintSidebar(Graphics &g, const RECT &rc) {
         y += S(44);
     }
 
-    // 底部状态
+    // 底部状态（面板地址一行：点击用默认浏览器打开）
     int fy = rc.bottom - S(78);
+    RECT panelLink{S(10), fy - S(30), S(kSidebarW) - S(10), fy - S(4)};
+    str(g, L"面板 127.0.0.1:" + std::to_wstring(uiState.cfg.resolver.httpPort), uiState.fTiny, kCyan,
+        RectF((REAL)(panelLink.left + S(12)), (REAL)panelLink.top, (REAL)(panelLink.right - panelLink.left - S(18)),
+              (REAL)(panelLink.bottom - panelLink.top)));
+    addAct(panelLink, A_OPEN_PANEL);
     Pen sep(kLine);
     g.DrawLine(&sep, S(22), fy, S(kSidebarW) - S(22), fy);
     str(g, L"v" + widestr(uiState.ctx->version), uiState.fTiny, kDim,
@@ -1737,7 +2423,9 @@ void paintHeader(Graphics &g, const RECT &rc) {
         int w;
     };
     std::vector<Pill> pills;
-    pills.push_back({L"解析器 :" + std::to_wstring(uiState.cfg.resolver.port), kGreen, S(118)});
+    bool resolverReady = uiState.ctx && uiState.ctx->engine && uiState.ctx->engine->ready();
+    pills.push_back({resolverReady ? (L"解析器 :" + std::to_wstring(uiState.cfg.resolver.port)) : L"解析器 未监听",
+                     resolverReady ? kGreen : kRed, S(118)});
     pills.push_back({uiState.cfg.takeover.active ? L"系统接管 已接管" : L"系统接管 未接管",
                      uiState.cfg.takeover.active ? kGreen : kAmber, S(132)});
     pills.push_back({util::isAdmin() ? L"管理员" : L"普通用户", util::isAdmin() ? kGreen : kAmber,
@@ -1934,8 +2622,17 @@ void paintOverview(Graphics &g, const RECT &content) {
         }
     }
     if (count == 0) {
-        str(g, L"还没有解析流量。添加一条规则，或从浏览器访问一个网站。", uiState.fSmall, kDim,
-            RectF((REAL)(live.left + S(16)), (REAL)rowY, (REAL)(hw), (REAL)S(40)));
+        std::wstring hint;
+        if (uiState.cfg.takeover.active)
+            hint = L"已接管系统 DNS，但还没有查询；请确认应用正在访问网络。";
+        else if (util::isAdmin())
+            hint = L"还没有流量经过本程序。仅运行程序不会自动监测：请到「系统接管」页接管，"
+                   L"或让应用使用本机代理 127.0.0.1:8899。";
+        else
+            hint = L"还没有流量经过本程序。接管系统 DNS 需要管理员：请点「以管理员身份重启」，"
+                   L"或让应用使用本机代理 127.0.0.1:8899。";
+        str(g, hint, uiState.fSmall, kDim,
+            RectF((REAL)(live.left + S(16)), (REAL)rowY, (REAL)hw, (REAL)S(40)));
     }
 }
 
@@ -2435,14 +3132,19 @@ void paintSettings(Graphics &g, const RECT &content) {
     str(g, L"配置：" + util::w(uiState.ctx->cfg->path()), uiState.fMono, kDim,
         RectF((REAL)(info.left + S(18)), (REAL)(info.top + S(64)), (REAL)(info.right - info.left - S(36)),
               (REAL)S(20)));
+    str(g, L"提示：点击「导入配置…」后，可把 JSON 文件拖入弹窗或选择文件（合并，不删除现有配置）", uiState.fTiny, kDim,
+        RectF((REAL)(info.left + S(18)), (REAL)(info.top + S(88)), (REAL)(info.right - info.left - S(36)),
+              (REAL)S(18)));
 
     // 底部按钮：配置导入导出 + 缓存/退出
     RECT expBtn{content.left, info.bottom + S(14), content.left + S(120), info.bottom + S(48)};
-    RECT impBtn{content.left + S(132), info.bottom + S(14), content.left + S(252), info.bottom + S(48)};
-    RECT clear{content.left + S(264), info.bottom + S(14), content.left + S(384), info.bottom + S(48)};
-    RECT quit{content.left + S(396), info.bottom + S(14), content.left + S(516), info.bottom + S(48)};
-    for (const auto &b : {std::make_pair(expBtn, L"导出配置…"), std::make_pair(impBtn, L"导入配置…"),
-                          std::make_pair(clear, L"清空缓存"), std::make_pair(quit, L"退出程序")}) {
+    RECT oneBtn{content.left + S(132), info.bottom + S(14), content.left + S(252), info.bottom + S(48)};
+    RECT impBtn{content.left + S(264), info.bottom + S(14), content.left + S(384), info.bottom + S(48)};
+    RECT clear{content.left + S(396), info.bottom + S(14), content.left + S(516), info.bottom + S(48)};
+    RECT quit{content.left + S(528), info.bottom + S(14), content.left + S(648), info.bottom + S(48)};
+    for (const auto &b : {std::make_pair(expBtn, L"全量导出…"), std::make_pair(oneBtn, L"单个导出…"),
+                          std::make_pair(impBtn, L"导入配置…"), std::make_pair(clear, L"清空缓存"),
+                          std::make_pair(quit, L"退出程序")}) {
         roundRect(g, RectF((REAL)b.first.left, (REAL)b.first.top, (REAL)(b.first.right - b.first.left),
                            (REAL)(b.first.bottom - b.first.top)),
                   (REAL)S(8), kBtnBg, kLine2);
@@ -2452,6 +3154,7 @@ void paintSettings(Graphics &g, const RECT &content) {
             StringAlignmentCenter);
     }
     addAct(expBtn, A_EXPORT_CONFIG);
+    addAct(oneBtn, A_EXPORT_PROFILE);
     addAct(impBtn, A_IMPORT_CONFIG);
     addAct(clear, A_CLEAR);
     addAct(quit, A_QUIT);
@@ -2504,7 +3207,14 @@ void onAction(int kind, int index) {
             openDomainLookupDialog();
             break;
         case A_EXPORT_CONFIG: exportConfigFile(); break;
+        case A_EXPORT_PROFILE: exportSingleProfile(); break;
         case A_IMPORT_CONFIG: importConfigFile(); break;
+        case A_OPEN_PANEL: {
+            std::wstring url = L"http://127.0.0.1:" + std::to_wstring(uiState.cfg.resolver.httpPort) + L"/";
+            ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            toast(L"已在浏览器打开面板");
+            break;
+        }
         case A_TAKEOVER: applyTakeover(false); break;
         case A_RESTORE: applyTakeover(true); break;
         case A_ELEVATE: elevate(); break;
@@ -2767,8 +3477,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ((MINMAXINFO *)lp)->ptMinTrackSize.x = S(1120);
             ((MINMAXINFO *)lp)->ptMinTrackSize.y = S(760);
             return 0;
+        case WM_QUERYENDSESSION:
+            // 系统注销/关机时不再弹“关闭还是最小化”，直接允许结束
+            uiState.sessionEnding = true;
+            return TRUE;
         case WM_CLOSE:
-            DestroyWindow(hwnd);
+            requestClose(hwnd);
             return 0;
         case WM_DESTROY:
             KillTimer(hwnd, ID_TIMER);
@@ -2827,7 +3541,7 @@ int Run(HINSTANCE inst, Context &ctx) {
     wc.lpfnWndProc = WndProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
-    wc.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.hIcon = util::appIcon();
     wc.hbrBackground = nullptr;
     wc.lpszClassName = L"DNSPilotNative";
     if (!RegisterClassExW(&wc)) {

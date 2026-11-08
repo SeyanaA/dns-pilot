@@ -134,6 +134,23 @@ bool SystemDns::apply(bool takeIpv6, std::vector<TakeoverBackup> &backup, Takeov
         return false;
     }
     auto list = adapters();
+
+    // 已指向本机说明系统 DNS 可能已被接管（或手工改成了 127.0.0.1）。
+    // 此时再接管会把环回地址当成“原配置”写入备份，必须拒绝并提示先恢复。
+    // IPv6 的 ::1 允许存在（可能是上次接管残留）：它不会影响 IPv4 备份，
+    // 且下面的备份过滤会把静态 ::1 记为 DHCP，恢复时改为自动获取。
+    for (auto &a : list) {
+        if (!a.up) continue;
+        bool loop4 = false;
+        for (auto &ip : a.dns4) if (util::isLoopbackHost(ip)) loop4 = true;
+        if (loop4) {
+            res.message = "检测到网卡“" + a.alias +
+                          "”的 IPv4 DNS 已指向本机（127.0.0.1）。系统 DNS 可能已被接管；请先点「恢复原 DNS」，"
+                          "避免把环回地址写入备份。";
+            return false;
+        }
+    }
+
     int applied = 0;
     for (auto &a : list) {
         if (!a.up || !a.hasIpv4 || a.alias.empty()) continue;
@@ -146,8 +163,12 @@ bool SystemDns::apply(bool takeIpv6, std::vector<TakeoverBackup> &backup, Takeov
             b.alias = a.alias;
             b.family = "ipv4";
             b.mode = a.mode4;
-            b.servers = a.static4;
+            for (auto &s : a.static4)
+                if (!util::isLoopbackHost(s)) b.servers.push_back(s);
+            if (b.mode == "static" && b.servers.empty()) b.mode = "dhcp";
             backup.push_back(b);
+            util::logInfo("接管备份 IPv4 " + a.alias + "：" + b.mode +
+                          (b.servers.empty() ? "" : " " + b.servers.front()));
             applied++;
         } else {
             res.errors.push_back(a.alias + " IPv4: " + err);
@@ -161,8 +182,11 @@ bool SystemDns::apply(bool takeIpv6, std::vector<TakeoverBackup> &backup, Takeov
                 b.alias = a.alias;
                 b.family = "ipv6";
                 b.mode = a.mode6;
-                b.servers = a.static6;
+                for (auto &s : a.static6)
+                    if (!util::isLoopbackHost(s)) b.servers.push_back(s);
+                if (b.mode == "static" && b.servers.empty()) b.mode = "dhcp";
                 backup.push_back(b);
+                util::logInfo("接管备份 IPv6 " + a.alias + "：" + b.mode);
                 applied++;
             } else {
                 res.errors.push_back(a.alias + " IPv6: " + err);
@@ -181,26 +205,55 @@ bool SystemDns::apply(bool takeIpv6, std::vector<TakeoverBackup> &backup, Takeov
     return true;
 }
 
-static bool restoreOne(const TakeoverBackup &b, std::string &err) {
+static bool restoreOne(const TakeoverBackup &b, const std::vector<std::string> &fallback4,
+                       bool &usedFallback, bool &usedDhcp, std::string &err) {
+    usedFallback = false;
+    usedDhcp = false;
     std::wstring family = util::w(b.family == "ipv6" ? "ipv6" : "ipv4");
     std::wstring alias = util::w(b.alias);
     std::wstring base = L"interface " + family + L" ";
-    if (b.mode == "static" && !b.servers.empty()) {
-        std::wstring cmd = base + L"set dnsservers name=\"" + alias + L"\" static " + util::w(b.servers[0]) +
+
+    // 绝不把 127.0.0.1 / ::1 写回系统 DNS：备份里出现环回地址说明备份被污染或已接管
+    std::vector<std::string> servers;
+    for (auto &s : b.servers)
+        if (!util::isLoopbackHost(s)) servers.push_back(s);
+
+    bool staticMode = (b.mode == "static");
+    if (staticMode && servers.empty()) {
+        if (b.family != "ipv6" && !fallback4.empty()) {
+            servers = fallback4;
+            usedFallback = true;
+            util::logWarn("备份 " + b.alias + " " + b.family +
+                          " 无效（仅含环回/为空），改用当前系统 DNS 恢复");
+        } else {
+            // IPv6 没有可用的回退地址时改为自动获取，避免回写 ::1
+            usedDhcp = true;
+            staticMode = false;
+            util::logWarn("备份 " + b.alias + " " + b.family +
+                          " 无效（仅含环回/为空），改为自动获取（DHCP）");
+        }
+    }
+
+    if (staticMode) {
+        std::wstring cmd = base + L"set dnsservers name=\"" + alias + L"\" static " + util::w(servers[0]) +
                            L" primary validate=no";
         if (!runNetsh(cmd, err)) return false;
-        for (size_t i = 1; i < b.servers.size(); i++) {
-            std::wstring add = base + L"add dnsservers name=\"" + alias + L"\" " + util::w(b.servers[i]) +
+        for (size_t i = 1; i < servers.size(); i++) {
+            std::wstring add = base + L"add dnsservers name=\"" + alias + L"\" " + util::w(servers[i]) +
                                L" index=" + std::to_wstring(i + 1) + L" validate=no";
             if (!runNetsh(add, err)) return false;
         }
+        util::logInfo("恢复 " + b.alias + " " + b.family + "：静态 " + servers[0]);
         return true;
     }
     std::wstring cmd = base + L"set dnsservers name=\"" + alias + L"\" dhcp";
-    return runNetsh(cmd, err);
+    if (!runNetsh(cmd, err)) return false;
+    util::logInfo("恢复 " + b.alias + " " + b.family + "：自动获取（DHCP）");
+    return true;
 }
 
-bool SystemDns::restore(const std::vector<TakeoverBackup> &backup, TakeoverResult &res) {
+bool SystemDns::restore(const std::vector<TakeoverBackup> &backup, TakeoverResult &res,
+                        const std::vector<std::string> &fallback4) {
     res = TakeoverResult();
     if (!util::isAdmin()) {
         res.message = "需要管理员权限才能恢复系统 DNS";
@@ -210,15 +263,26 @@ bool SystemDns::restore(const std::vector<TakeoverBackup> &backup, TakeoverResul
         res.message = "没有可恢复的备份";
         return false;
     }
-    int okCount = 0;
+    int okCount = 0, fallbackCount = 0, dhcpCount = 0;
     for (auto &b : backup) {
         std::string err;
-        if (restoreOne(b, err)) okCount++;
-        else res.errors.push_back(b.alias + " " + b.family + ": " + err);
+        bool usedFallback = false, usedDhcp = false;
+        if (restoreOne(b, fallback4, usedFallback, usedDhcp, err)) {
+            okCount++;
+            if (usedFallback) fallbackCount++;
+            if (usedDhcp) dhcpCount++;
+        } else {
+            res.errors.push_back(b.alias + " " + b.family + ": " + err);
+        }
     }
     flushDns();
-    res.ok = okCount > 0;
+    // 只有全部恢复成功才算成功；部分失败时保留备份，便于重试
+    res.ok = okCount == (int)backup.size();
     res.message = "已恢复 " + std::to_string(okCount) + "/" + std::to_string(backup.size()) + " 项网卡 DNS 设置";
+    if (fallbackCount > 0)
+        res.message += "（其中 " + std::to_string(fallbackCount) + " 项备份无效，已用当前系统 DNS 恢复）";
+    if (dhcpCount > 0)
+        res.message += "（其中 " + std::to_string(dhcpCount) + " 项备份无效，已改为自动获取）";
     if (!res.errors.empty()) res.message += "（部分失败）";
     return res.ok;
 }

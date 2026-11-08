@@ -588,6 +588,10 @@ std::string Httpd::route(const std::string &method, const std::string &path,
                 v["hint"] = js::Value::strV("请点击“提权重启”，在 UAC 确认后由管理员实例接管");
                 return v.dump();
             }
+            if (cfg_.takeover().active) {
+                status = 400;
+                return errJson("系统 DNS 已接管；请先恢复原 DNS，避免用 127.0.0.1 覆盖原始备份").dump();
+            }
             if (cfg_.resolver().port != 53) {
                 status = 400;
                 return errJson("系统接管要求解析端口为 53（当前为 " + std::to_string(cfg_.resolver().port) +
@@ -630,7 +634,12 @@ std::string Httpd::route(const std::string &method, const std::string &path,
                 return errJson("没有可恢复的 DNS 备份").dump();
             }
             TakeoverResult res;
-            bool ok = SystemDns::restore(tk.backup, res);
+            std::vector<std::string> fallback;
+            for (auto &p : cfg_.snapshot().profiles)
+                if (p.id == "system")
+                    for (auto &s : p.servers)
+                        if (!util::isLoopbackHost(s)) fallback.push_back(s);
+            bool ok = SystemDns::restore(tk.backup, res, fallback);
             if (ok) cfg_.setTakeover(false, {});
             auto v = ok ? okJson() : errJson(res.message);
             v["message"] = js::Value::strV(res.message);

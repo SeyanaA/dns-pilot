@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -13,7 +14,7 @@
 #include "systemdns.h"
 #include "util.h"
 
-static const char *kVersion = "1.1.2";
+static const char *kVersion = "1.1.3";
 
 struct Options {
     std::string configPath;
@@ -93,6 +94,18 @@ static std::vector<std::string> collectUpstreams(const Config &cfg) {
                     out.push_back(s);
     }
     if (out.empty()) out = SystemDns::detectUpstreams();
+    return out;
+}
+
+// 备份失效（仅含环回）时用于恢复 IPv4 的兜底地址
+static std::vector<std::string> systemFallback(const Config &cfg) {
+    std::vector<std::string> out;
+    for (auto &p : cfg.profiles) {
+        if (p.id != "system") continue;
+        for (auto &s : p.servers)
+            if (!util::isLoopbackHost(s) && std::find(out.begin(), out.end(), s) == out.end())
+                out.push_back(s);
+    }
     return out;
 }
 
@@ -299,7 +312,7 @@ int main(int argc, char **argv) {
             return 1;
         }
         TakeoverResult res;
-        bool ok = SystemDns::restore(tk.backup, res);
+        bool ok = SystemDns::restore(tk.backup, res, systemFallback(cfg.snapshot()));
         printf("%s\n", res.message.c_str());
         for (auto &e : res.errors) printf("  - %s\n", e.c_str());
         if (ok) cfg.setTakeover(false, {});
@@ -338,6 +351,8 @@ int main(int argc, char **argv) {
     if (opt.takeover) {
         if (!util::isAdmin()) {
             util::logWarn("接管系统 DNS 需要管理员权限；可运行 dnspilot.exe --elevate");
+        } else if (cfg.takeover().active) {
+            util::logWarn("系统 DNS 已接管；请先运行 dnspilot.exe --restore，避免用环回地址覆盖备份");
         } else if (cfg.resolver().port != 53) {
             util::logWarn("接管要求解析端口为 53，当前为 " + std::to_string(cfg.resolver().port));
         } else {
@@ -399,7 +414,7 @@ int main(int argc, char **argv) {
     if (cfg.takeover().active && cfg.restoreOnExit()) {
         TakeoverCfg tk = cfg.takeover();
         TakeoverResult res;
-        if (SystemDns::restore(tk.backup, res)) {
+        if (SystemDns::restore(tk.backup, res, systemFallback(cfg.snapshot()))) {
             cfg.setTakeover(false, {});
             util::logInfo(res.message);
         } else {
