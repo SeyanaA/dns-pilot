@@ -211,12 +211,13 @@ static bool applyProfileOp(Config &c, const js::Value &body, std::string &err) {
     return false;
 }
 
-Httpd::Httpd(Engine &engine, ConfigStore &cfg, Stats &stats, Proxy &proxy, std::string relaunchArgs,
-             std::function<void()> requestQuit)
+Httpd::Httpd(Engine &engine, ConfigStore &cfg, Stats &stats, Proxy &proxy, std::string version,
+             std::string relaunchArgs, std::function<void()> requestQuit)
     : engine_(engine),
       cfg_(cfg),
       stats_(stats),
       proxy_(proxy),
+      version_(std::move(version)),
       relaunchArgs_(std::move(relaunchArgs)),
       requestQuit_(std::move(requestQuit)) {}
 
@@ -371,7 +372,7 @@ std::string Httpd::route(const std::string &method, const std::string &path,
         ProxyCfg pc = cfg.proxy;
 
         js::Value v = okJson();
-        v["version"] = js::Value::strV("1.0.0");
+        v["version"] = js::Value::strV(version_);
         v["pid"] = js::Value::numV((double)GetCurrentProcessId());
         v["admin"] = js::Value::boolV(util::isAdmin());
         v["now"] = js::Value::numV((double)util::nowMs());

@@ -6,6 +6,7 @@
 - 进程选择器按 **OBS 的方式**列出当前运行中的进程（图标、窗口标题、PID、路径），搜索 / 双击即可选中。
 - 单文件 `dnspilot.exe`，无第三方运行时；另带一个可选的本地 Web 面板（手机/远程查看用）。
 - **绑定查询**：选一个正在运行的程序，或输入域名/网址，直接查看它当前生效的规则与 DNS 服务器。
+- **配置搬迁**：设置页一键导出 DNS 配置与绑定规则（JSON），在新机器上一键导入（合并、自动去重与重映射）。
 
 ![总览（浅色）](docs/screenshots/native-overview-light.png)
 
@@ -39,7 +40,7 @@ run.cmd
 | 浏览器绑定 | 直接修改浏览器配置文件夹中的安全 DNS（DoH），按浏览器 profile 单独绑定 |
 | 系统接管 | 接管/恢复系统 DNS、提权重启、网卡 DNS 现状 |
 | 绑定查询 | 选择运行中的程序或输入域名/网址，查看当前生效的规则、DNS 配置、服务器与策略（只读） |
-| 设置 | 默认配置、缓存/TTL/超时、代理开关与端口、退出恢复、桌面窗口、界面主题 |
+| 设置 | 默认配置、缓存/TTL/超时、代理开关与端口、退出恢复、桌面窗口、界面主题、配置导出/导入 |
 
 ![选择进程（浅色）](docs/screenshots/process-picker-light.png)
 ![浏览器绑定（浅色）](docs/screenshots/browser-binding-light.png)
@@ -81,6 +82,7 @@ Windows 的 DNS Client 服务（Dnscache）会代普通应用发起查询，这�
 - **浏览器配置文件单独绑定**：浏览器绑定页选择 profile → 绑定 DNS。内置配置会自动填入官方 DoH 地址；「系统默认」表示关闭浏览器的安全 DNS。
 - **给应用走代理**：`chrome.exe --proxy-server="socks5://127.0.0.1:8899"`；代理会按 `chrome.exe` 的规则解析目标域名。
 - **全局接管**：系统接管页提权后接管；退出程序或点击「恢复原 DNS」恢复。
+- **换电脑 / 分享配置**：设置页「导出配置…」生成 JSON（DNS 配置 + 应用/域名规则）；在新机器上「导入配置…」选择该文件即可，已存在项自动复用、重复规则自动跳过，配置 id 冲突会重新映射。
 
 ## 浏览器配置文件夹绑定
 
@@ -109,6 +111,8 @@ dnspilot.exe [选项]
   --http-port <n>    本地 Web 面板端口（默认 8765）
   --proxy-port <n>   应用代理端口（默认 8899）
   --config <path>    指定配置文件路径
+  --export-config <path>  导出 DNS 配置与绑定规则（JSON）后退出
+  --import-config <path>  导入 DNS 配置与绑定规则（合并、去重）后退出
   --no-proxy         不启动应用代理
   --no-browser       不自动打开浏览器面板
   --no-gui           不打开桌面窗口，仅运行服务与 Web 面板
@@ -151,7 +155,7 @@ build.cmd
 build_installer.cmd
 ```
 
-产物：`dist\DNS-Pilot-Setup-1.1.1.exe`（约 505 KB）。
+产物：`dist\DNS-Pilot-Setup-1.1.2.exe`（约 505 KB）。
 
 安装程序行为：
 
@@ -208,6 +212,7 @@ build\browsers_test.exe        :: 浏览器配置绑定（88 项断言）
 - 主题：标题栏按钮与设置页列表均可切换浅色/深色并立即生效；写入 `ui.theme` 后重启保持；总览图表、表单对话框、进程选择器、浏览器绑定页、系统接管页两套主题均已核对。
 - 绑定查询：选择运行中的 `dnspilot.exe` 命中应用规则并显示 Cloudflare / `1.1.1.1, 1.0.0.1`；输入 `https://www.netflix.com/title/1` 自动识别主机名并命中域名规则 `netflix.com`（阿里云 / `223.5.5.5, 223.6.6.6`）；未命中时显示默认配置与系统 DNS；查询前后配置文件哈希不变。
 - 域名规则归一化：把 `https://tccc-adminlt.eyar.com/#/login` 存成域名规则后，绑定查询与真实查询都按 `tccc-adminlt.eyar.com` 命中并走规则绑定的内网 DNS `172.25.16.181`（事件 `ruleType=domain`、`ruleMatch` 为归一化后的域名）；旧配置无需手工修改。
+- 配置导出/导入：设置页导出 JSON 后导入到空配置，自定义配置与规则正确出现；重复导入新增 0 项、跳过重复项；目标已存在同 id 配置时生成 `import-xxxx` 并重写规则与 `defaultProfile`；CLI（`--export-config` / `--import-config`）输出同样的摘要。
 
 ## 已知限制
 

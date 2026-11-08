@@ -15,8 +15,8 @@
 
 class Httpd {
   public:
-    Httpd(Engine &engine, ConfigStore &cfg, Stats &stats, Proxy &proxy, std::string relaunchArgs,
-          std::function<void()> requestQuit);
+    Httpd(Engine &engine, ConfigStore &cfg, Stats &stats, Proxy &proxy, std::string version,
+          std::string relaunchArgs, std::function<void()> requestQuit);
     bool start(std::string &err);
     void stop();
     uint16_t port() const { return port_; }
@@ -33,6 +33,7 @@ class Httpd {
     ConfigStore &cfg_;
     Stats &stats_;
     Proxy &proxy_;
+    std::string version_;
     std::string relaunchArgs_;
     std::function<void()> requestQuit_;
     std::atomic<bool> running_{false};

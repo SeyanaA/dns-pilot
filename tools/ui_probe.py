@@ -201,6 +201,50 @@ def cmd_pidwindows(pid):
         print("hwnd=%d title=%r class=%s" % (hwnd, text_of(hwnd), class_name(hwnd)))
 
 
+def cmd_tree(pid, depth=4):
+    want = int(pid)
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def cb(hwnd, _lp):
+        p = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+        if p.value == want:
+            walk(hwnd, 0, int(depth))
+        return True
+
+    def walk(hwnd, level, maxd):
+        r = rect_of(hwnd, True)
+        print("%s%d hwnd=%d class=%s id=%d rect=%d,%d,%d,%d text=%r" % (
+            "  " * level, level, hwnd, class_name(hwnd), user32.GetDlgCtrlID(hwnd),
+            r.left, r.top, r.right, r.bottom, text_of(hwnd)[:80]))
+        if level >= maxd:
+            return
+        for c in children(hwnd):
+            walk(c, level + 1, maxd)
+
+    user32.EnumWindows(cb, 0)
+
+
+def cmd_char(hwnd, value, select_all=False):
+    target = int(hwnd)
+    if select_all:
+        user32.SendMessageW(target, 0x00B1, 0, -1)  # EM_SETSEL(0, -1)
+    for ch in value:
+        user32.SendMessageW(target, WM_CHAR, ord(ch), 1)
+    print("typed %r into hwnd %s%s" % (value, hwnd, " (replaced)" if select_all else ""))
+
+
+def cmd_bmclick(hwnd):
+    user32.PostMessageW(int(hwnd), 0x00F5, 0, 0)  # BM_CLICK
+    print("clicked button hwnd %s" % hwnd)
+
+
+def cmd_keyhwnd(hwnd, vk):
+    user32.SendMessageW(int(hwnd), WM_KEYDOWN, int(vk), 1)
+    user32.SendMessageW(int(hwnd), WM_KEYUP, int(vk), 0xC0000001)
+    print("key %d -> hwnd %s" % (int(vk), hwnd))
+
+
 def cmd_child(cls, ctrl_id):
     hwnd = find(cls)
     ctrl = user32.GetDlgItem(hwnd, int(ctrl_id))
@@ -256,6 +300,16 @@ def main(argv):
         cmd_child(argv[2], argv[3])
     elif cmd == "pidwindows":
         cmd_pidwindows(argv[2])
+    elif cmd == "tree":
+        cmd_tree(argv[2], argv[3] if len(argv) > 3 else 4)
+    elif cmd == "char":
+        cmd_char(argv[2], argv[3])
+    elif cmd == "charall":
+        cmd_char(argv[2], argv[3], select_all=True)
+    elif cmd == "bmclick":
+        cmd_bmclick(argv[2])
+    elif cmd == "keyhwnd":
+        cmd_keyhwnd(argv[2], argv[3])
     else:
         print(__doc__)
         return 1

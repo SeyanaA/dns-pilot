@@ -257,6 +257,194 @@ bool configFromJson(const js::Value &v, Config &c, std::string &err) {
     return true;
 }
 
+// ---------------------------------------------------------------- 配置导出 / 导入
+// 只搬运 DNS 配置与规则绑定；端口、接管备份、主题等本机状态不导出。
+
+static js::Value profileToJson(const Profile &p) {
+    js::Value o = js::Value::objV();
+    o["id"] = js::Value::strV(p.id);
+    o["name"] = js::Value::strV(p.name);
+    o["provider"] = js::Value::strV(p.provider);
+    o["strategy"] = js::Value::strV(p.strategy);
+    o["note"] = js::Value::strV(p.note);
+    js::Value arr = js::Value::arrV();
+    for (auto &s : p.servers) arr.arr.push_back(js::Value::strV(s));
+    o["servers"] = arr;
+    return o;
+}
+
+static js::Value ruleToJson(const Rule &r) {
+    js::Value o = js::Value::objV();
+    o["match"] = js::Value::strV(r.match);
+    o["profile"] = js::Value::strV(r.profile);
+    o["note"] = js::Value::strV(r.note);
+    o["enabled"] = js::Value::boolV(r.enabled);
+    return o;
+}
+
+js::Value configExportBundle(const Config &c, const std::string &appVersion) {
+    js::Value v = js::Value::objV();
+    v["format"] = js::Value::strV("dnspilot-export");
+    v["version"] = js::Value::numV(1);
+    v["appVersion"] = js::Value::strV(appVersion);
+    v["defaultProfile"] = js::Value::strV(c.defaultProfile);
+
+    js::Value ps = js::Value::arrV();
+    for (auto &p : c.profiles) ps.arr.push_back(profileToJson(p));
+    v["profiles"] = ps;
+
+    js::Value apps = js::Value::arrV();
+    for (auto &r : c.appRules) apps.arr.push_back(ruleToJson(r));
+    v["appRules"] = apps;
+
+    js::Value domains = js::Value::arrV();
+    for (auto &r : c.domainRules) domains.arr.push_back(ruleToJson(r));
+    v["domainRules"] = domains;
+    return v;
+}
+
+bool configImportBundle(const js::Value &v, Config &c, TransferStats &st, std::string &err) {
+    if (!v.isObj()) {
+        err = "配置包不是有效的 JSON 对象";
+        return false;
+    }
+    if (util::trim(v.s("format")) != "dnspilot-export") {
+        err = "不是 DNS Pilot 导出的配置文件";
+        return false;
+    }
+    int ver = (int)v.n("version", 0);
+    if (ver < 1 || ver > 1) {
+        err = "不支持的配置包版本：" + std::to_string(ver);
+        return false;
+    }
+    const js::Value *profiles = v.get("profiles");
+    if (!profiles || !profiles->isArr()) {
+        err = "配置包缺少 profiles 数组";
+        return false;
+    }
+
+    // 本机 system 配置永远保留（服务器由启动时探测，不随导入覆盖）
+    bool hasSystem = false;
+    for (auto &p : c.profiles)
+        if (p.id == "system") hasSystem = true;
+    if (!hasSystem) {
+        Profile sys;
+        sys.id = "system";
+        sys.name = "系统默认";
+        sys.provider = "system";
+        sys.strategy = "failover";
+        c.profiles.insert(c.profiles.begin(), sys);
+    }
+
+    auto usedId = [&](const std::string &id) {
+        for (auto &p : c.profiles)
+            if (p.id == id) return true;
+        return false;
+    };
+    auto sameProfile = [&](const Profile &a, const Profile &b) {
+        return a.name == b.name && a.provider == b.provider && a.servers == b.servers &&
+               a.strategy == b.strategy;
+    };
+
+    std::map<std::string, std::string> idMap;  // 导入包里的 id -> 本机 id
+    for (auto &x : profiles->arr) {
+        if (!x.isObj()) continue;
+        const std::string importedId = util::trim(x.s("id"));
+        Profile p;
+        p.id = importedId;
+        p.name = util::trim(x.s("name"));
+        p.provider = util::trim(x.s("provider", "custom"));
+        if (p.provider.empty()) p.provider = "custom";
+        p.strategy = util::trim(x.s("strategy", "failover"));
+        if (p.strategy != "only") p.strategy = "failover";
+        p.note = x.s("note");
+        for (auto &s : readStringArray(x.get("servers"))) {
+            std::string host;
+            uint16_t port = 0;
+            if (util::parseServer(s, host, port)) p.servers.push_back(s);
+        }
+        if (p.provider == "system") {
+            if (!importedId.empty()) idMap[importedId] = "system";
+            continue;
+        }
+        if (p.name.empty() || p.servers.empty()) continue;
+
+        std::string localId;
+        for (auto &q : c.profiles) {
+            if (sameProfile(q, p)) {
+                localId = q.id;
+                break;
+            }
+        }
+        if (localId.empty()) {
+            std::string id = importedId;
+            if (id.empty() || usedId(id)) {
+                do {
+                    id = "import-" + util::randHex(4);
+                } while (usedId(id));
+            }
+            p.id = id;
+            c.profiles.push_back(p);
+            st.profilesAdded++;
+            localId = id;
+        } else {
+            st.profilesReused++;
+        }
+        if (!importedId.empty()) idMap[importedId] = localId;
+    }
+
+    std::string defImport = util::trim(v.s("defaultProfile"));
+    if (!defImport.empty()) {
+        auto it = idMap.find(defImport);
+        std::string mapped = it != idMap.end() ? it->second : defImport;
+        for (auto &p : c.profiles)
+            if (p.id == mapped) c.defaultProfile = mapped;
+    }
+
+    auto importRules = [&](const js::Value *arr, std::vector<Rule> &dst, bool domain) {
+        if (!arr || !arr->isArr()) return;
+        for (auto &x : arr->arr) {
+            if (!x.isObj()) continue;
+            Rule r;
+            r.match = util::trim(x.s("match"));
+            if (domain) r.match = util::normalizeDomainRule(r.match);
+            r.note = x.s("note");
+            r.enabled = x.bv("enabled", true);
+            std::string importedProfile = util::trim(x.s("profile"));
+            auto it = idMap.find(importedProfile);
+            r.profile = it != idMap.end() ? it->second : importedProfile;
+            bool profileOk = false;
+            for (auto &p : c.profiles)
+                if (p.id == r.profile) profileOk = true;
+            if (r.match.empty() || !profileOk) {
+                st.rulesSkipped++;
+                continue;
+            }
+            bool dup = false;
+            for (auto &q : dst) {
+                if (domain) {
+                    if (util::normalizeDomainRule(q.match) == r.match) {
+                        dup = true;
+                        break;
+                    }
+                } else if (util::lowerAscii(util::trim(q.match)) == util::lowerAscii(r.match)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) {
+                st.rulesSkipped++;
+                continue;
+            }
+            dst.push_back(r);
+            st.rulesAdded++;
+        }
+    };
+    importRules(v.get("appRules"), c.appRules, false);
+    importRules(v.get("domainRules"), c.domainRules, true);
+    return true;
+}
+
 bool ConfigStore::load(std::string &err) {
     std::lock_guard<std::mutex> g(mu_);
     std::string text;

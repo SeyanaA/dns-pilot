@@ -16,3 +16,10 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+
+# 内含本机内网 DNS 的接管截图，不随源码发布
+/docs/screenshots/native-takeover*.png
+
+# 内部交接文档（不随源码发布）
+/HANDOFF.md
+/CONTINUE.md

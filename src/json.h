@@ -11,6 +11,17 @@
 
 namespace js {
 
+inline void appendUtf8(std::string &o, unsigned cp) {
+    if (cp <= 0x7F) o += (char)cp;
+    else if (cp <= 0x7FF) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
+    else if (cp <= 0xFFFF) {
+        o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F));
+    } else {
+        o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F));
+        o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F));
+    }
+}
+
 struct Value {
     enum Type { NUL, BOOL, NUM, STR, ARR, OBJ } type = NUL;
     bool b = false;
@@ -143,7 +154,44 @@ struct Value {
     }
 
     static bool parse(const std::string &text, Value &out, std::string &err) {
-        Parser p{text.c_str(), text.c_str() + text.size(), std::string()};
+        const char *begin = text.data();
+        const char *endp = begin + text.size();
+        std::string utf8;
+        // 容忍 BOM：UTF-16 LE/BE 先转成 UTF-8；纯 UTF-8 BOM 直接跳过。
+        if (text.size() >= 2) {
+            unsigned char b0 = (unsigned char)text[0], b1 = (unsigned char)text[1];
+            bool le = (b0 == 0xFF && b1 == 0xFE);
+            bool be = (b0 == 0xFE && b1 == 0xFF);
+            if (le || be) {
+                utf8.reserve(text.size());
+                const unsigned char *p = (const unsigned char *)text.data() + 2;
+                const unsigned char *e = (const unsigned char *)text.data() + text.size();
+                while (p + 1 < e) {
+                    unsigned u = le ? ((unsigned)p[0] | ((unsigned)p[1] << 8))
+                                    : (((unsigned)p[0] << 8) | (unsigned)p[1]);
+                    p += 2;
+                    if (u >= 0xD800 && u <= 0xDBFF) {
+                        if (p + 1 < e) {
+                            unsigned lo = le ? ((unsigned)p[0] | ((unsigned)p[1] << 8))
+                                             : (((unsigned)p[0] << 8) | (unsigned)p[1]);
+                            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                                p += 2;
+                                u = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+                            } else u = 0xFFFD;
+                        } else u = 0xFFFD;
+                    } else if (u >= 0xDC00 && u <= 0xDFFF) {
+                        u = 0xFFFD;
+                    }
+                    appendUtf8(utf8, u);
+                }
+                begin = utf8.data();
+                endp = begin + utf8.size();
+            }
+        }
+        if ((size_t)(endp - begin) >= 3 && (unsigned char)begin[0] == 0xEF &&
+            (unsigned char)begin[1] == 0xBB && (unsigned char)begin[2] == 0xBF)
+            begin += 3;
+        Parser p{begin, endp, std::string()};
         if (!p.value(out, 0)) { err = p.err.empty() ? "JSON 解析失败" : p.err; return false; }
         p.ws();
         if (p.cur != p.end) { err = "JSON 尾部存在多余字符"; return false; }
@@ -248,16 +296,6 @@ struct Value {
                 else return 0xFFFFFFFF;
             }
             return v;
-        }
-        static void appendUtf8(std::string &o, unsigned cp) {
-            if (cp <= 0x7F) o += (char)cp;
-            else if (cp <= 0x7FF) { o += (char)(0xC0 | (cp >> 6)); o += (char)(0x80 | (cp & 0x3F)); }
-            else if (cp <= 0xFFFF) {
-                o += (char)(0xE0 | (cp >> 12)); o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F));
-            } else {
-                o += (char)(0xF0 | (cp >> 18)); o += (char)(0x80 | ((cp >> 12) & 0x3F));
-                o += (char)(0x80 | ((cp >> 6) & 0x3F)); o += (char)(0x80 | (cp & 0x3F));
-            }
         }
         bool array(Value &v, int depth) {
             cur++; v.type = ARR;

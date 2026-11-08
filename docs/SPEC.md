@@ -36,6 +36,7 @@ Windows 的 DNS 解析有两个事实，决定了必须同时提供多条路径�
   - `match` 在保存和加载时归一化：允许直接粘贴网址（`https://host:port/path?x#y` → `host`），统一小写、去掉末尾点；匹配逻辑对规则与查询名都做同样的归一化，因此旧配置中存成完整 URL 的规则同样生效。
 - **Config**：`version`、`resolver{listen,port,httpPort,cacheEnabled,minTtl,maxTtl,queryTimeoutMs}`、`proxy{enabled,port}`、`profiles[]`、`defaultProfile`、`appRules[]`、`domainRules[]`、`takeover{active,backup[]}`、`ui{openBrowser,restoreOnExit,nativeWindow,theme}`。
   - `ui.theme` 取值 `"light"` / `"dark"`，默认 `"light"`；字段缺失或非法时按 `"light"` 处理（旧配置迁移）。
+- **编码与 BOM**：配置文件与导入文件按 UTF-8 JSON 读取；允许 UTF-8 BOM，以及 UTF-16 LE/BE BOM（读取时自动转换为 UTF-8），便于用记事本/PowerShell 编辑后直接使用。解析失败时回退默认配置并报告错误；原文件保持不变，直到下一次保存配置。
 - **规则专用 Profile**：规则勾选自定义服务器时自动创建，`provider="auto"`，名称 `<match> · 专用`；规则不再引用时自动清理。
 - **BrowserProfile（不持久化）**：`browser`、`browserName`、`folder`、`path`、`name`、`email`、`running`、`mode`（off/secure/automatic/unknown）、`dohUrl`；读取自浏览器配置文件，写入时直接修改该文件。
 - **Event**：`t`、`source`（`dns`/`proxy`）、`client`（exe 名或 `未知`）、`pid`、`domain`、`qtype`、`profileId`、`profileName`、`upstream`、`latencyMs`、`cached`、`ruleType`（`domain`/`app`/`none`）、`ruleMatch`、`status`（`ok`/`nxdomain`/`servfail`/`timeout`/`blocked`/`error`）。
@@ -108,7 +109,7 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
 - DNS 服务器页：新增、编辑、删除配置；服务器列表逗号分隔；策略（主用+回退 / 仅主用）；`system` 只读。
 - 浏览器绑定页：扫描 Chrome/Edge/Firefox 配置；显示 profile 名称/邮箱/当前 DoH/运行状态；绑定（写 `dns_over_https` 或 `prefs.js` TRR）与恢复默认；运行中的浏览器禁止写入。
 - 系统接管页：接管/恢复、提权重启、网卡 DNS 列表。
-- 设置页：默认配置、缓存、TTL、超时、代理、端口、退出恢复、桌面窗口开关、界面主题（浅色/深色）。
+- 设置页：默认配置、缓存、TTL、超时、代理、端口、退出恢复、桌面窗口开关、界面主题（浅色/深色）、配置导出/导入。
 - 绑定查询页（只读）：
   - **按程序**：从运行中的进程选择一个 exe，显示命中的应用规则（或「默认配置」）、生效的 DNS 配置、服务器列表与策略。
   - **按域名**：输入域名（支持子域；可粘贴 URL，自动取主机名），显示命中的域名规则（最长后缀优先，或「默认配置」）、生效配置、服务器与策略。
@@ -132,6 +133,24 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
   - 浏览器绑定页（信息框、浏览器 badge、运行状态 badge、绑定/恢复按钮的启用与禁用态）。
 - 浅色强调色按可读性微调（如 `#0B7F96`、`#0F7A57`、`#A6660F`），避免白底上的低对比文字。
 - 标题栏按钮、表单输入框与开关的命中区不因主题变化；切换后不重建窗口，仅重建颜色相关 GDI 画刷并重绘。
+
+### 9.2 配置导出 / 导入
+
+- 入口：设置页「导出配置…」「导入配置…」；命令行 `--export-config <path>` / `--import-config <path>`（执行后直接退出，不启动服务）。
+- 导出内容：`profiles[]`（含自定义与规则专用配置）、`appRules[]`、`domainRules[]`、`defaultProfile`。
+  - 不导出：解析/面板/代理端口、缓存与超时、接管状态与网卡备份、浏览器绑定、主题等本机状态。
+- 文件格式（UTF-8 JSON）：
+  ```json
+  { "format": "dnspilot-export", "version": 1, "appVersion": "1.2.0",
+    "defaultProfile": "system", "profiles": [], "appRules": [], "domainRules": [] }
+  ```
+- 导入采用**合并**语义，不删除现有配置：
+  - 配置按语义（名称 + 服务器 + 策略 + provider）去重，已存在则复用本机配置；
+  - `provider=system` 一律映射到本机 `system`，不覆盖本机探测到的服务器；
+  - 配置 id 冲突时生成 `import-xxxx` 新 id，并重写引用它的规则与 `defaultProfile`；
+  - 域名规则在导入时归一化；应用规则按 `match` 忽略大小写去重；重复规则与引用无效配置的规则计入“跳过”；
+  - 导入后清理不再被引用的规则专用配置（`provider=auto`）。
+- 结果反馈：界面弹窗显示“新增配置 / 复用配置 / 新增规则 / 跳过规则”数量；CLI 打印同样摘要。
 
 ## 10. HTTP API（仅 127.0.0.1，变更请求需 `X-DNSPilot: 1`）
 
@@ -190,6 +209,16 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
     - 在「添加域名规则」里直接粘贴 `https://tccc-adminlt.eyar.com/#/login` 保存，规则列表显示 `tccc-adminlt.eyar.com`；
     - 绑定查询输入同一网址，显示该域名规则与绑定的 DNS 配置/服务器；
     - 旧配置里 `match` 存成完整 URL 的规则，启动后无需手工修改即可命中，真实查询使用该规则绑定的上游。
+18. **配置导出 / 导入**：
+    - 导出的 JSON 含自定义配置与规则，不含端口、接管备份、主题；
+    - 新配置导入后，自定义配置与规则出现，规则引用的配置 id 正确；
+    - 重复导入不产生重复项（跳过计数增加）；
+    - 目标已有同 id 但内容不同的配置时，导入生成 `import-xxxx` 并重写规则与 `defaultProfile`；
+    - 被跳过的规则不会留下无引用的规则专用配置。
+19. **BOM 兼容**：
+    - 用记事本/PowerShell 保存的 UTF-8 BOM 配置或导入文件能正常解析，不出现“配置文件解析失败”；
+    - UTF-16 LE/BE BOM 的同一文件同样能解析（内容一致）；
+    - 无 BOM 的 UTF-8 文件行为不变。
 
 ## 13. 已知限制
 

@@ -13,10 +13,12 @@
 #include "systemdns.h"
 #include "util.h"
 
-static const char *kVersion = "1.1.1";
+static const char *kVersion = "1.1.2";
 
 struct Options {
     std::string configPath;
+    std::string exportPath;
+    std::string importPath;
     int port = 0, httpPort = 0, proxyPort = 0;
     bool noBrowser = false, noProxy = false, takeover = false, restore = false;
     bool elevate = false, status = false, help = false, verbose = false, takeoverPlan = false;
@@ -33,10 +35,15 @@ static void setupConsole() {
         SetConsoleTitleW(L"DNS Pilot");
         return;
     }
+    // 输出已重定向到文件/管道时保留原句柄，否则 freopen(CONOUT$) 会吞掉重定向结果
+    DWORD outType = GetFileType(GetStdHandle(STD_OUTPUT_HANDLE));
+    DWORD errType = GetFileType(GetStdHandle(STD_ERROR_HANDLE));
+    bool outRedirected = outType == FILE_TYPE_DISK || outType == FILE_TYPE_PIPE;
+    bool errRedirected = errType == FILE_TYPE_DISK || errType == FILE_TYPE_PIPE;
     if (AttachConsole(ATTACH_PARENT_PROCESS)) {
         g_hasConsole = true;
-        freopen("CONOUT$", "w", stdout);
-        freopen("CONOUT$", "w", stderr);
+        if (!outRedirected) freopen("CONOUT$", "w", stdout);
+        if (!errRedirected) freopen("CONOUT$", "w", stderr);
         freopen("CONIN$", "r", stdin);
         SetConsoleOutputCP(CP_UTF8);
         SetConsoleTitleW(L"DNS Pilot");
@@ -51,6 +58,8 @@ static void printHelp() {
         "  --http-port <n>    可视化面板端口（默认 8765）\n"
         "  --proxy-port <n>   应用代理端口（默认 8899）\n"
         "  --config <path>    指定配置文件路径\n"
+        "  --export-config <path>  导出 DNS 配置与绑定规则（JSON）后退出\n"
+        "  --import-config <path>  导入 DNS 配置与绑定规则（合并，跳过重复）后退出\n"
         "  --no-proxy         不启动应用代理\n"
         "  --no-browser       不自动打开浏览器面板\n"
         "  --no-gui           不创建桌面窗口（仅运行 Web 面板与 API）\n"
@@ -100,6 +109,8 @@ int main(int argc, char **argv) {
         else if (a == "--http-port") next(opt.httpPort);
         else if (a == "--proxy-port") next(opt.proxyPort);
         else if (a == "--config" && i + 1 < argc) opt.configPath = argv[++i];
+        else if (a == "--export-config" && i + 1 < argc) opt.exportPath = argv[++i];
+        else if (a == "--import-config" && i + 1 < argc) opt.importPath = argv[++i];
         else if (a == "--no-browser") opt.noBrowser = true;
         else if (a == "--no-gui") opt.noGui = true;
         else if (a == "--no-proxy") opt.noProxy = true;
@@ -150,6 +161,56 @@ int main(int argc, char **argv) {
     cfg.setPath(opt.configPath.empty() ? defaultConfigPath() : opt.configPath);
     std::string err;
     if (!cfg.load(err) && !err.empty()) util::logWarn(err);
+
+    // 配置导出 / 导入：只处理 DNS 配置与规则绑定，完成后直接退出（不启动服务）
+    if (!opt.exportPath.empty()) {
+        Config c = cfg.snapshot();
+        js::Value bundle = configExportBundle(c, kVersion);
+        std::string text = bundle.dump(2) + "\n";
+        if (!util::fileWrite(opt.exportPath, text)) {
+            printf("导出失败：无法写入 %s\n", opt.exportPath.c_str());
+            return 1;
+        }
+        printf("已导出 %d 个 DNS 配置、%d 条应用规则、%d 条域名规则 -> %s\n",
+               (int)c.profiles.size(), (int)c.appRules.size(), (int)c.domainRules.size(),
+               opt.exportPath.c_str());
+        return 0;
+    }
+    if (!opt.importPath.empty()) {
+        std::string text;
+        if (!util::fileRead(opt.importPath, text)) {
+            printf("导入失败：无法读取 %s\n", opt.importPath.c_str());
+            return 1;
+        }
+        js::Value bundle;
+        std::string perr;
+        if (!js::Value::parse(text, bundle, perr)) {
+            printf("导入失败：JSON 解析错误：%s\n", perr.c_str());
+            return 1;
+        }
+        TransferStats st;
+        std::string ierr;
+        bool accepted = false;
+        bool saved = cfg.update(
+            [&](Config &c) {
+                accepted = configImportBundle(bundle, c, st, ierr);
+                return accepted;
+            },
+            err);
+        if (!accepted) {
+            printf("导入失败：%s\n", ierr.c_str());
+            return 1;
+        }
+        if (!saved) {
+            printf("导入失败：%s\n", err.c_str());
+            return 1;
+        }
+        printf("已导入：新增 %d 个 DNS 配置（复用 %d 个）、%d 条规则，跳过 %d 条；配置文件：%s\n",
+               st.profilesAdded, st.profilesReused, st.rulesAdded, st.rulesSkipped,
+               cfg.path().c_str());
+        return 0;
+    }
+
     cfg.mutate([&](Config &c) {
         if (opt.port > 0) c.resolver.port = opt.port;
         if (opt.httpPort > 0) c.resolver.httpPort = opt.httpPort;
@@ -265,7 +326,7 @@ int main(int argc, char **argv) {
         if (!proxy.start(perr)) util::logWarn("应用代理启动失败：" + perr);
     }
 
-    Httpd httpd(engine, cfg, stats, proxy, relaunchArgs, [] { util::quitFlag() = true; });
+    Httpd httpd(engine, cfg, stats, proxy, kVersion, relaunchArgs, [] { util::quitFlag() = true; });
     std::string herr;
     if (!httpd.start(herr)) {
         util::logError(herr);

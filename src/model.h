@@ -81,6 +81,17 @@ std::string defaultConfigPath();
 js::Value configToJson(const Config &c);
 bool configFromJson(const js::Value &v, Config &c, std::string &err);
 
+// 导出/导入：只包含 DNS 配置与规则绑定，不含端口、接管备份等本机状态
+struct TransferStats {
+    int profilesAdded = 0;
+    int profilesReused = 0;
+    int rulesAdded = 0;
+    int rulesSkipped = 0;  // 重复或引用了无效配置
+};
+
+js::Value configExportBundle(const Config &c, const std::string &appVersion);
+bool configImportBundle(const js::Value &v, Config &c, TransferStats &st, std::string &err);
+
 class ConfigStore {
   public:
     bool load(std::string &err);

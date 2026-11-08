@@ -2,6 +2,7 @@
 #include "ui_native.h"
 
 #include <commctrl.h>
+#include <commdlg.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
 #include <windows.h>
@@ -132,6 +133,8 @@ enum {
     A_QUIT,
     A_LOOKUP_EXE,
     A_LOOKUP_DOMAIN,
+    A_EXPORT_CONFIG,
+    A_IMPORT_CONFIG,
 };
 
 enum { ID_TIMER = 1, ID_CHART = 100 };
@@ -1429,8 +1432,7 @@ void openBrowserDialog(int index) {
 }
 
 // 绑定查询：输入域名或网址，只记录到界面状态，不修改配置
-void openDomainLookupDialog() {
-    std::vector<FormItem> items;
+void openDomainLookupDialog() {    std::vector<FormItem> items;
     FormItem f1;
     f1.type = FT_TEXT;
     f1.label = L"域名或网址（例如 netflix.com、https://www.netflix.com/title/1）";
@@ -1452,6 +1454,106 @@ void openDomainLookupDialog() {
     if (!ok) return;
     uiState.lookupDomain = normalizeHostInput(out[0].value);
     InvalidateRect(uiState.hwnd, nullptr, FALSE);
+}
+
+// ---------------------------------------------------------------- 配置导出 / 导入
+
+std::wstring pickSaveFile(HWND owner, const std::wstring &suggested) {
+    wchar_t buf[MAX_PATH] = {};
+    lstrcpynW(buf, suggested.c_str(), MAX_PATH);
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"DNS Pilot 配置 (*.json)\0*.json\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"json";
+    ofn.lpstrTitle = L"导出 DNS 配置与绑定";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&ofn)) return L"";
+    return buf;
+}
+
+std::wstring pickOpenFile(HWND owner) {
+    wchar_t buf[MAX_PATH] = {};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"DNS Pilot 配置 (*.json)\0*.json\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"json";
+    ofn.lpstrTitle = L"导入 DNS 配置与绑定";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return L"";
+    return buf;
+}
+
+void exportConfigFile() {
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    wchar_t name[64];
+    swprintf(name, 64, L"dnspilot-backup-%04d%02d%02d.json", st.wYear, st.wMonth, st.wDay);
+    std::wstring path = pickSaveFile(uiState.hwnd, name);
+    if (path.empty()) return;
+
+    Config c = uiState.ctx->cfg->snapshot();
+    js::Value bundle = configExportBundle(c, uiState.ctx->version);
+    std::string text = bundle.dump(2) + "\n";
+    if (!util::fileWrite(narrow(path), text)) {
+        msgErr(uiState.hwnd, L"无法写入文件：\n" + path);
+        return;
+    }
+    toast(L"已导出 " + std::to_wstring(c.profiles.size()) + L" 个 DNS 配置、" +
+          std::to_wstring(c.appRules.size() + c.domainRules.size()) + L" 条规则");
+}
+
+void importConfigFile() {
+    std::wstring path = pickOpenFile(uiState.hwnd);
+    if (path.empty()) return;
+
+    std::string text;
+    if (!util::fileRead(narrow(path), text)) {
+        msgErr(uiState.hwnd, L"无法读取文件：\n" + path);
+        return;
+    }
+    js::Value bundle;
+    std::string perr;
+    if (!js::Value::parse(text, bundle, perr)) {
+        msgErr(uiState.hwnd, L"JSON 解析失败：" + util::w(perr));
+        return;
+    }
+
+    TransferStats stats;
+    std::string ierr;
+    std::string err;
+    bool accepted = false;
+    bool saved = uiState.ctx->cfg->update(
+        [&](Config &c) {
+            accepted = configImportBundle(bundle, c, stats, ierr);
+            if (!accepted) return false;
+            cleanupAutoProfiles(c);  // 规则被跳过时清掉无引用的规则专用配置
+            return true;
+        },
+        err);
+    if (!accepted) {
+        msgErr(uiState.hwnd, L"导入失败：" + util::w(ierr));
+        return;
+    }
+    if (!saved) {
+        msgErr(uiState.hwnd, L"导入失败：" + util::w(err));
+        return;
+    }
+
+    refreshData();
+    InvalidateRect(uiState.hwnd, nullptr, FALSE);
+    MessageBoxW(uiState.hwnd,
+                (L"导入完成。\n\n新增 DNS 配置：" + std::to_wstring(stats.profilesAdded) +
+                 L" 个（复用已有 " + std::to_wstring(stats.profilesReused) + L" 个）\n" +
+                 L"新增规则：" + std::to_wstring(stats.rulesAdded) + L" 条\n" +
+                 L"跳过：" + std::to_wstring(stats.rulesSkipped) + L" 条（重复或引用了无效配置）")
+                    .c_str(),
+                L"DNS Pilot", MB_OK | MB_ICONINFORMATION);
 }
 
 void applyTakeover(bool restore) {
@@ -2334,10 +2436,13 @@ void paintSettings(Graphics &g, const RECT &content) {
         RectF((REAL)(info.left + S(18)), (REAL)(info.top + S(64)), (REAL)(info.right - info.left - S(36)),
               (REAL)S(20)));
 
-    // 底部按钮
-    RECT clear{content.left, info.bottom + S(14), content.left + S(120), info.bottom + S(48)};
-    RECT quit{content.left + S(132), info.bottom + S(14), content.left + S(252), info.bottom + S(48)};
-    for (const auto &b : {std::make_pair(clear, L"清空缓存"), std::make_pair(quit, L"退出程序")}) {
+    // 底部按钮：配置导入导出 + 缓存/退出
+    RECT expBtn{content.left, info.bottom + S(14), content.left + S(120), info.bottom + S(48)};
+    RECT impBtn{content.left + S(132), info.bottom + S(14), content.left + S(252), info.bottom + S(48)};
+    RECT clear{content.left + S(264), info.bottom + S(14), content.left + S(384), info.bottom + S(48)};
+    RECT quit{content.left + S(396), info.bottom + S(14), content.left + S(516), info.bottom + S(48)};
+    for (const auto &b : {std::make_pair(expBtn, L"导出配置…"), std::make_pair(impBtn, L"导入配置…"),
+                          std::make_pair(clear, L"清空缓存"), std::make_pair(quit, L"退出程序")}) {
         roundRect(g, RectF((REAL)b.first.left, (REAL)b.first.top, (REAL)(b.first.right - b.first.left),
                            (REAL)(b.first.bottom - b.first.top)),
                   (REAL)S(8), kBtnBg, kLine2);
@@ -2346,6 +2451,8 @@ void paintSettings(Graphics &g, const RECT &content) {
                   (REAL)(b.first.bottom - b.first.top)),
             StringAlignmentCenter);
     }
+    addAct(expBtn, A_EXPORT_CONFIG);
+    addAct(impBtn, A_IMPORT_CONFIG);
     addAct(clear, A_CLEAR);
     addAct(quit, A_QUIT);
 }
@@ -2396,6 +2503,8 @@ void onAction(int kind, int index) {
         case A_LOOKUP_DOMAIN:
             openDomainLookupDialog();
             break;
+        case A_EXPORT_CONFIG: exportConfigFile(); break;
+        case A_IMPORT_CONFIG: importConfigFile(); break;
         case A_TAKEOVER: applyTakeover(false); break;
         case A_RESTORE: applyTakeover(true); break;
         case A_ELEVATE: elevate(); break;
