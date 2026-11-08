@@ -12,7 +12,7 @@ Unicode true
 !define LANG_EN 1033
 
 !define APP_NAME "DNS Pilot"
-!define APP_VERSION "1.1.0"
+!define APP_VERSION "1.1.1"
 !define APP_EXE "dnspilot.exe"
 !define APP_PUBLISHER "DNS Pilot"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DNSPilot"
@@ -29,7 +29,7 @@ ManifestDPIAware true
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "1.1.0.0"
+VIProductVersion "1.1.1.0"
 VIAddVersionKey "ProductName" "${APP_NAME}"
 VIAddVersionKey "FileDescription" "${APP_NAME} 安装程序"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"

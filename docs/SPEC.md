@@ -33,6 +33,7 @@ Windows 的 DNS 解析有两个事实，决定了必须同时提供多条路径�
   `system`（沿用系统原 DNS）、`cloudflare`、`aliyun`、`google`、`dnspod`、`quad9`。
 - **AppRule**：`match`（exe 文件名，支持 `*`/`?` 通配，大小写不敏感）、`profile`、`enabled`、`note`。
 - **DomainRule**：`match`（域名后缀，如 `netflix.com` = `netflix.com` 及其子域；支持 `*.x.com`；仅写 `x.com` 等价）、`profile`、`enabled`、`note`。
+  - `match` 在保存和加载时归一化：允许直接粘贴网址（`https://host:port/path?x#y` → `host`），统一小写、去掉末尾点；匹配逻辑对规则与查询名都做同样的归一化，因此旧配置中存成完整 URL 的规则同样生效。
 - **Config**：`version`、`resolver{listen,port,httpPort,cacheEnabled,minTtl,maxTtl,queryTimeoutMs}`、`proxy{enabled,port}`、`profiles[]`、`defaultProfile`、`appRules[]`、`domainRules[]`、`takeover{active,backup[]}`、`ui{openBrowser,restoreOnExit,nativeWindow,theme}`。
   - `ui.theme` 取值 `"light"` / `"dark"`，默认 `"light"`；字段缺失或非法时按 `"light"` 处理（旧配置迁移）。
 - **规则专用 Profile**：规则勾选自定义服务器时自动创建，`provider="auto"`，名称 `<match> · 专用`；规则不再引用时自动清理。
@@ -185,6 +186,10 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
       - 查 `example.org` 显示「默认配置」与 `system` 当前探测到的网卡 DNS。
     - 粘贴 `https://www.netflix.com/title/1` 能识别主机名；未命中规则时明确显示回退到默认配置。
     - 两套主题下该页排版、文字对比正常；查询不修改配置。
+17. **域名规则归一化**：
+    - 在「添加域名规则」里直接粘贴 `https://tccc-adminlt.eyar.com/#/login` 保存，规则列表显示 `tccc-adminlt.eyar.com`；
+    - 绑定查询输入同一网址，显示该域名规则与绑定的 DNS 配置/服务器；
+    - 旧配置里 `match` 存成完整 URL 的规则，启动后无需手工修改即可命中，真实查询使用该规则绑定的上游。
 
 ## 13. 已知限制
 

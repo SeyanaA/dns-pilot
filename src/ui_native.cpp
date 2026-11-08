@@ -1042,7 +1042,8 @@ void openRuleDialog(bool app, int index) {
     std::vector<FormItem> items;
     FormItem f1;
     f1.type = app ? FT_BROWSE : FT_TEXT;
-    f1.label = app ? L"进程（exe 文件名）" : L"域名（匹配该域名及其所有子域）";
+    f1.label = app ? L"进程（exe 文件名）"
+                   : L"域名（可直接粘贴网址，自动取主机名；匹配该域名及其所有子域）";
     f1.value = match;
     items.push_back(f1);
 
@@ -1081,8 +1082,16 @@ void openRuleDialog(bool app, int index) {
             if (procpick::Show(dlg, p) && !p.exeName.empty()) it.value = p.exeName;
         },
         nullptr,
-        [cfg](std::vector<FormItem> &v, std::wstring &err) {
-            if (util::trim(narrow(v[0].value)).empty()) {
+        [cfg, app](std::vector<FormItem> &v, std::wstring &err) {
+            if (!app) {
+                // 域名规则允许直接粘贴网址，统一归一化成主机名后再保存
+                std::wstring host = util::w(util::normalizeDomainRule(narrow(v[0].value)));
+                if (host.empty()) {
+                    err = L"域名格式无效，请填写 netflix.com 这类域名，或直接粘贴网址";
+                    return false;
+                }
+                v[0].value = host;
+            } else if (util::trim(narrow(v[0].value)).empty()) {
                 err = L"请填写进程名或域名";
                 return false;
             }
@@ -1101,7 +1110,10 @@ void openRuleDialog(bool app, int index) {
         out);
     if (!ok) return;
 
-    std::string matchA = util::trim(narrow(out[0].value));
+    // 域名规则再归一化一次，避免绕过表单校验的调用写入 URL 形式
+    std::wstring matchW = out[0].value;
+    if (!app) matchW = util::w(util::normalizeDomainRule(narrow(matchW)));
+    std::string matchA = util::trim(narrow(matchW));
     if (matchA.empty()) return;
     std::vector<std::string> customServers;
     std::string profileId;
@@ -1116,7 +1128,7 @@ void openRuleDialog(bool app, int index) {
         if (sel >= 0 && sel < (int)cfg.profiles.size()) profileId = cfg.profiles[sel].id;
     }
     std::string err;
-    if (!saveRule(app, index, out[0].value, profileId, customServers, out[4].value, err)) {
+    if (!saveRule(app, index, matchW, profileId, customServers, out[4].value, err)) {
         msgErr(uiState.hwnd, util::w(err));
         return;
     }

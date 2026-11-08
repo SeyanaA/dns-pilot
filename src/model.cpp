@@ -222,6 +222,11 @@ bool configFromJson(const js::Value &v, Config &c, std::string &err) {
     };
     readRules(v.get("appRules"), c.appRules);
     readRules(v.get("domainRules"), c.domainRules);
+    // 旧配置可能把完整的网址当成域名规则保存（https://host/path#x），加载时统一归一化为主机名
+    for (auto &r : c.domainRules) r.match = util::normalizeDomainRule(r.match);
+    c.domainRules.erase(std::remove_if(c.domainRules.begin(), c.domainRules.end(),
+                                       [](const Rule &r) { return r.match.empty(); }),
+                        c.domainRules.end());
 
     if (const js::Value *t = v.get("takeover")) {
         c.takeover.active = t->bv("active", false);

@@ -185,12 +185,33 @@ inline bool globMatch(const std::string &pattern, const std::string &text) {
     return pi == p.size();
 }
 
+// 域名输入归一：允许直接粘贴网址（https://host:port/path?x#y），统一成小写主机名；
+// 保留 *. 通配前缀；去掉末尾点。空结果表示输入不可用。
+inline std::string normalizeDomainRule(const std::string &in) {
+    std::string s = trim(in);
+    size_t scheme = s.find("://");
+    if (scheme != std::string::npos) s = s.substr(scheme + 3);
+    size_t cut = s.find_first_of("/?#");
+    if (cut != std::string::npos) s = s.substr(0, cut);
+    size_t at = s.rfind('@');
+    if (at != std::string::npos) s = s.substr(at + 1);
+    if (!s.empty() && s[0] == '[') {
+        size_t close = s.find(']');
+        if (close != std::string::npos) s = s.substr(1, close - 1);
+    } else {
+        size_t colon = s.rfind(':');
+        if (colon != std::string::npos && s.find(':') == colon) s = s.substr(0, colon);
+    }
+    while (!s.empty() && s.back() == '.') s.pop_back();
+    return lowerAscii(trim(s));
+}
+
 // 域名后缀匹配：netflix.com 命中 netflix.com / www.netflix.com；支持 *. 前缀与通配 *
+// 两侧都会先归一化，因此旧配置里存成完整 URL 的规则也能命中。
 inline bool domainMatch(const std::string &ruleIn, const std::string &nameIn) {
-    std::string rule = lowerAscii(trim(ruleIn));
-    std::string name = lowerAscii(trim(nameIn));
-    if (!name.empty() && name.back() == '.') name.pop_back();
-    if (rule.empty()) return false;
+    std::string rule = normalizeDomainRule(ruleIn);
+    std::string name = normalizeDomainRule(nameIn);
+    if (rule.empty() || name.empty()) return false;
     if (rule == "*") return true;
     if (startsWith(rule, "*.")) rule = rule.substr(2);
     while (!rule.empty() && rule.front() == '.') rule.erase(rule.begin());
