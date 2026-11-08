@@ -89,9 +89,9 @@ Color kLogoText(255, 255, 255, 255);
 bool gLightTheme = false;
 
 const wchar_t *kNavNames[] = {L"总览", L"应用规则", L"域名规则", L"DNS 服务器",
-                              L"浏览器绑定", L"系统接管", L"设置"};
+                              L"浏览器绑定", L"系统接管", L"绑定查询", L"设置"};
 const wchar_t *kPageTitles[] = {L"总览", L"应用规则", L"域名规则", L"DNS 服务器",
-                                L"浏览器绑定", L"系统接管", L"设置"};
+                                L"浏览器绑定", L"系统接管", L"绑定查询", L"设置"};
 const wchar_t *kPageSubs[] = {
     L"实时解析流、规则命中与缓存效果",
     L"让指定进程单独使用某个 DNS，可直接从运行中的进程选择",
@@ -99,13 +99,14 @@ const wchar_t *kPageSubs[] = {
     L"管理 DNS 服务器配置，主用优先、失败回退",
     L"修改浏览器配置文件夹中的安全 DNS（DoH），按浏览器配置单独绑定",
     L"把系统 DNS 指向本机解析器，让域名规则全局生效",
+    L"查看某个程序或域名当前生效的 DNS 绑定",
     L"缓存、代理、端口与退出行为",
 };
 
 const int kSidebarW = 216;
 const int kHeaderH = 72;
 const int kTitleH = 52;
-const int kPageCount = 7;
+const int kPageCount = 8;
 
 enum {
     A_NONE = 0,
@@ -129,6 +130,8 @@ enum {
     A_SETTINGS,
     A_CLEAR,
     A_QUIT,
+    A_LOOKUP_EXE,
+    A_LOOKUP_DOMAIN,
 };
 
 enum { ID_TIMER = 1, ID_CHART = 100 };
@@ -164,6 +167,9 @@ struct UIState {
     // 图表子窗口位置缓存：内容每秒刷新时不必重复 SetWindowPos/ShowWindow
     RECT chartRect{};
     bool chartPlaced = false;
+    // 绑定查询页的输入（只读查询，不写配置）
+    std::wstring lookupExe;
+    std::wstring lookupDomain;
 
     FontFamily *family = nullptr;
     Font *fH1 = nullptr;
@@ -427,6 +433,65 @@ std::string profileProviderOf(const Config &c, const std::string &id) {
 }
 
 bool isAutoProfile(const Config &c, const std::string &id) { return profileProviderOf(c, id) == "auto"; }
+
+const Profile *findProfile(const Config &c, const std::string &id) {
+    for (auto &p : c.profiles)
+        if (p.id == id) return &p;
+    return nullptr;
+}
+
+// 把“域名 / 网址”输入归一成主机名：去掉 scheme、userinfo、端口、路径、查询串和末尾点
+std::wstring normalizeHostInput(const std::wstring &input) {
+    std::wstring s = trimW(input);
+    size_t scheme = s.find(L"://");
+    if (scheme != std::wstring::npos) s = s.substr(scheme + 3);
+    size_t cut = s.find_first_of(L"/?#");
+    if (cut != std::wstring::npos) s = s.substr(0, cut);
+    size_t at = s.rfind(L'@');
+    if (at != std::wstring::npos) s = s.substr(at + 1);
+    if (!s.empty() && s[0] == L'[') {
+        size_t close = s.find(L']');
+        if (close != std::wstring::npos) s = s.substr(1, close - 1);
+    } else {
+        size_t colon = s.rfind(L':');
+        if (colon != std::wstring::npos && s.find(L':') == colon) s = s.substr(0, colon);
+    }
+    while (!s.empty() && s.back() == L'.') s.pop_back();
+    return trimW(s);
+}
+
+struct BindingView {
+    std::wstring rule;
+    std::wstring profile;
+    std::wstring servers;
+    std::wstring strategy;
+    bool fallback = true;
+};
+
+// 只读查询：用 ConfigStore 的匹配逻辑得到规则与配置，不写配置、不发查询
+BindingView describeBinding(const std::string &domain, const std::string &exe) {
+    BindingView v;
+    ProfileChoice pc = uiState.ctx->cfg->chooseProfile(domain, exe);
+    if (pc.ruleType == "domain")
+        v.rule = L"域名规则 · " + util::w(pc.ruleMatch);
+    else if (pc.ruleType == "app")
+        v.rule = L"应用规则 · " + util::w(pc.ruleMatch);
+    else
+        v.rule = L"默认配置（未命中规则）";
+    v.fallback = pc.ruleType == "none";
+    const Profile *p = findProfile(uiState.cfg, pc.profileId);
+    if (p) {
+        v.profile = util::w(p->name) + (p->provider == "system" ? L" · 自动探测" : L"");
+        v.servers = joinServers(p->servers);
+        if (v.servers.empty() && p->provider == "system") v.servers = L"未探测到网卡 DNS";
+        v.strategy = p->strategy == "only" ? L"仅使用第一项" : L"主用优先，失败后回退";
+    } else {
+        v.profile = util::w(pc.profileId);
+        v.servers = L"—";
+        v.strategy = L"—";
+    }
+    return v;
+}
 
 void toast(const std::wstring &text) {
     uiState.toast = text;
@@ -1351,6 +1416,32 @@ void openBrowserDialog(int index) {
     InvalidateRect(uiState.hwnd, nullptr, FALSE);
 }
 
+// 绑定查询：输入域名或网址，只记录到界面状态，不修改配置
+void openDomainLookupDialog() {
+    std::vector<FormItem> items;
+    FormItem f1;
+    f1.type = FT_TEXT;
+    f1.label = L"域名或网址（例如 netflix.com、https://www.netflix.com/title/1）";
+    f1.value = uiState.lookupDomain;
+    items = {f1};
+    std::vector<FormItem> out;
+    bool ok = ShowForm(
+        uiState.hwnd, L"查看域名绑定", items, nullptr, nullptr,
+        [](std::vector<FormItem> &v, std::wstring &err) {
+            std::wstring host = normalizeHostInput(v[0].value);
+            if (host.empty()) {
+                err = L"请输入域名，例如 netflix.com";
+                return false;
+            }
+            v[0].value = host;
+            return true;
+        },
+        out);
+    if (!ok) return;
+    uiState.lookupDomain = normalizeHostInput(out[0].value);
+    InvalidateRect(uiState.hwnd, nullptr, FALSE);
+}
+
 void applyTakeover(bool restore) {
     if (!util::isAdmin()) {
         msgErr(uiState.hwnd, L"接管系统 DNS 需要管理员权限。\n请点击“以管理员身份重启”，在 UAC 确认后重试。");
@@ -2051,6 +2142,124 @@ void paintTakeover(Graphics &g, const RECT &content) {
     }
 }
 
+// 绑定查询页：按程序 / 按域名查看当前生效的 DNS（只读）
+void paintLookup(Graphics &g, const RECT &content) {
+    int cw = content.right - content.left;
+    int gap = S(14);
+    int cardW = (cw - gap) / 2;
+    int cardH = S(344);
+    RECT cards[2] = {
+        {content.left, content.top, content.left + cardW, content.top + cardH},
+        {content.left + cardW + gap, content.top, content.right, content.top + cardH},
+    };
+
+    auto drawCard = [&](const RECT &r, const wchar_t *title, const wchar_t *button, int action) {
+        roundRect(g, RectF((REAL)r.left, (REAL)r.top, (REAL)(r.right - r.left), (REAL)(r.bottom - r.top)),
+                  (REAL)S(12), kCard, kLine);
+        str(g, title, uiState.fH2, kText,
+            RectF((REAL)(r.left + S(18)), (REAL)(r.top + S(14)), (REAL)(cardW - S(180)), (REAL)S(22)));
+        RECT br{r.right - S(18) - S(124), r.top + S(10), r.right - S(18), r.top + S(42)};
+        roundRect(g, RectF((REAL)br.left, (REAL)br.top, (REAL)(br.right - br.left), (REAL)(br.bottom - br.top)),
+                  (REAL)S(8), kBtnPrimary, kBtnPrimaryBorder);
+        str(g, button, uiState.fBody, kCyan,
+            RectF((REAL)br.left, (REAL)br.top, (REAL)(br.right - br.left), (REAL)(br.bottom - br.top)),
+            StringAlignmentCenter);
+        addAct(br, action);
+    };
+    drawCard(cards[0], L"按程序查看", L"选择进程…", A_LOOKUP_EXE);
+    drawCard(cards[1], L"按域名查看", L"输入域名…", A_LOOKUP_DOMAIN);
+
+    auto drawRows = [&](const RECT &r, const std::wstring &subjectLabel, const std::wstring &subject,
+                        const BindingView &bv) {
+        struct Row {
+            std::wstring label;
+            std::wstring value;
+            bool mono;
+        };
+        std::vector<Row> rows;
+        rows.push_back({subjectLabel, subject, true});
+        rows.push_back({L"生效规则", bv.rule, false});
+        rows.push_back({L"DNS 配置", bv.profile, false});
+        rows.push_back({L"服务器", bv.servers, true});
+        rows.push_back({L"策略", bv.strategy, false});
+
+        int x = r.left + S(20);
+        int w = (r.right - r.left) - S(40);
+        int rowH = S(52);
+        int y = r.top + S(62);
+        for (size_t i = 0; i < rows.size(); i++) {
+            int ry = y + (int)i * rowH;
+            str(g, rows[i].label, uiState.fTiny, kMuted, RectF((REAL)x, (REAL)ry, (REAL)w, (REAL)S(16)));
+            str(g, rows[i].value, rows[i].mono ? uiState.fMono : uiState.fBody, kText,
+                RectF((REAL)x, (REAL)(ry + S(19)), (REAL)w, (REAL)S(22)));
+            if (i + 1 < rows.size()) {
+                Pen sep(kLineSoft);
+                g.DrawLine(&sep, x, ry + rowH - S(8), x + w, ry + rowH - S(8));
+            }
+        }
+    };
+
+    std::string exe = narrow(uiState.lookupExe);
+    if (exe.empty()) {
+        str(g, L"选择一个正在运行的程序，查看它当前生效的 DNS。", uiState.fSmall, kDim,
+            RectF((REAL)(cards[0].left + S(20)), (REAL)(cards[0].top + S(74)), (REAL)(cardW - S(40)),
+                  (REAL)S(44)));
+    } else {
+        drawRows(cards[0], L"程序", uiState.lookupExe, describeBinding("", exe));
+    }
+
+    std::string domain = narrow(uiState.lookupDomain);
+    if (domain.empty()) {
+        str(g, L"输入域名或粘贴网址，查看它当前生效的 DNS。", uiState.fSmall, kDim,
+            RectF((REAL)(cards[1].left + S(20)), (REAL)(cards[1].top + S(74)), (REAL)(cardW - S(40)),
+                  (REAL)S(44)));
+    } else {
+        drawRows(cards[1], L"域名", uiState.lookupDomain, describeBinding(domain, ""));
+    }
+
+    // 当前环境
+    RECT env{content.left, content.top + cardH + gap, content.right, content.top + cardH + gap + S(116)};
+    roundRect(g, RectF((REAL)env.left, (REAL)env.top, (REAL)(env.right - env.left), (REAL)(env.bottom - env.top)),
+              (REAL)S(12), kCard, kLine);
+    str(g, L"当前环境", uiState.fH2, kText,
+        RectF((REAL)(env.left + S(18)), (REAL)(env.top + S(12)), (REAL)S(160), (REAL)S(22)));
+    int envColW = (env.right - env.left - S(36)) / 4;
+    int envY = env.top + S(50);
+    auto envCol = [&](int i, const wchar_t *label, const std::wstring &value) {
+        int x = env.left + S(18) + i * envColW;
+        str(g, label, uiState.fTiny, kMuted, RectF((REAL)x, (REAL)envY, (REAL)(envColW - S(10)), (REAL)S(16)));
+        str(g, value, uiState.fBody, kText,
+            RectF((REAL)x, (REAL)(envY + S(20)), (REAL)(envColW - S(10)), (REAL)S(22)));
+    };
+    envCol(0, L"解析器", util::w(uiState.cfg.resolver.listen) + L":" +
+                          std::to_wstring(uiState.cfg.resolver.port));
+    envCol(1, L"系统接管", uiState.cfg.takeover.active ? L"已接管" : L"未接管");
+    envCol(2, L"默认配置", util::w(profileNameOf(uiState.cfg, uiState.cfg.defaultProfile)));
+    envCol(3, L"缓存", uiState.cfg.resolver.cacheEnabled
+                           ? L"开启 · TTL " + std::to_wstring(uiState.cfg.resolver.minTtl) + L"–" +
+                                 std::to_wstring(uiState.cfg.resolver.maxTtl)
+                           : L"关闭");
+
+    // 说明
+    RECT info{content.left, env.bottom + gap, content.right, env.bottom + gap + S(116)};
+    roundRect(g, RectF((REAL)info.left, (REAL)info.top, (REAL)(info.right - info.left),
+                       (REAL)(info.bottom - info.top)),
+              (REAL)S(12), kInfoBg, kInfoBorder);
+    str(g, L"匹配顺序", uiState.fH2, kText,
+        RectF((REAL)(info.left + S(18)), (REAL)(info.top + S(12)), (REAL)S(160), (REAL)S(22)));
+    str(g, L"域名规则（最长后缀优先）→ 应用规则（按顺序，首个匹配）→ 默认配置。", uiState.fSmall, kMuted,
+        RectF((REAL)(info.left + S(18)), (REAL)(info.top + S(44)), (REAL)(info.right - info.left - S(36)),
+              (REAL)S(20)));
+    str(g, L"应用绑定只对自带解析器或走本机代理的程序生效；经系统 DNS 的普通程序请用域名规则或代理。",
+        uiState.fSmall, kMuted,
+        RectF((REAL)(info.left + S(18)), (REAL)(info.top + S(66)), (REAL)(info.right - info.left - S(36)),
+              (REAL)S(20)));
+    str(g, L"此页只读：不修改配置，也不发起解析请求；system 配置的服务器在程序启动时从网卡自动探测。",
+        uiState.fTiny, kDim,
+        RectF((REAL)(info.left + S(18)), (REAL)(info.top + S(90)), (REAL)(info.right - info.left - S(36)),
+              (REAL)S(18)));
+}
+
 void paintSettings(Graphics &g, const RECT &content) {
     int y = content.top;
     RECT editBtn{content.right - S(126), y - S(2), content.right, y + S(34)};
@@ -2137,7 +2346,8 @@ void paintPage(Graphics &g, const RECT &content) {
         case 3: paintProfiles(g, content); break;
         case 4: paintBrowsers(g, content); break;
         case 5: paintTakeover(g, content); break;
-        case 6: paintSettings(g, content); break;
+        case 6: paintLookup(g, content); break;
+        case 7: paintSettings(g, content); break;
     }
 }
 
@@ -2163,6 +2373,17 @@ void onAction(int kind, int index) {
         case A_PROF_EDIT: openProfileDialog(index); break;
         case A_SETTINGS: openSettingsDialog(); break;
         case A_BROWSER_BIND: openBrowserDialog(index); break;
+        case A_LOOKUP_EXE: {
+            procpick::Picked p;
+            if (procpick::Show(uiState.hwnd, p) && !p.exeName.empty()) {
+                uiState.lookupExe = p.exeName;
+                InvalidateRect(uiState.hwnd, nullptr, FALSE);
+            }
+            break;
+        }
+        case A_LOOKUP_DOMAIN:
+            openDomainLookupDialog();
+            break;
         case A_TAKEOVER: applyTakeover(false); break;
         case A_RESTORE: applyTakeover(true); break;
         case A_ELEVATE: elevate(); break;

@@ -15,6 +15,8 @@ import ctypes
 import ctypes.wintypes as wt
 import sys
 
+import time
+
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.FindWindowW.restype = wt.HWND
 user32.FindWindowW.argtypes = [wt.LPCWSTR, wt.LPCWSTR]
@@ -111,8 +113,16 @@ def cmd_children(cls):
             c, tid, class_name(c), r.left, r.top, r.right, r.bottom, text_of(c)))
 
 
+def ensure_visible(hwnd):
+    """最小化时先恢复：最小化窗口不处理 WM_PAINT，命中区会停留在旧页面。"""
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        time.sleep(0.35)
+
+
 def cmd_click(cls, x, y, post=False):
     hwnd = find(cls)
+    ensure_visible(hwnd)
     lparam = (int(y) << 16) | (int(x) & 0xFFFF)
     send = user32.PostMessageW if post else user32.SendMessageW
     if post:
@@ -122,16 +132,19 @@ def cmd_click(cls, x, y, post=False):
     print("clicked %d,%d on %s%s" % (int(x), int(y), cls, " (post)" if post else ""))
 
 
-def cmd_type(cls, index, value):
+def cmd_type(cls, index, value, select_all=False):
     hwnd = find(cls)
+    ensure_visible(hwnd)
     edits = [c for c in children(hwnd) if class_name(c).upper() == "EDIT"]
     if int(index) >= len(edits):
         fail("only %d EDIT controls" % len(edits))
     target = edits[int(index)]
+    if select_all:
+        user32.SendMessageW(target, 0x00B1, 0, -1)  # EM_SETSEL(0, -1)
     # 关键：跨进程 EDIT 必须逐字符 WM_CHAR，内部文本才会真正改变
     for ch in value:
         user32.SendMessageW(target, WM_CHAR, ord(ch), 1)
-    print("typed %r into edit[%d]" % (value, int(index)))
+    print("typed %r into edit[%d]%s" % (value, int(index), " (replaced)" if select_all else ""))
 
 
 def cmd_key(cls, vk):
@@ -225,6 +238,8 @@ def main(argv):
         cmd_click(argv[2], argv[3], argv[4], post=True)
     elif cmd == "type":
         cmd_type(argv[2], argv[3], argv[4])
+    elif cmd == "typeall":
+        cmd_type(argv[2], argv[3], argv[4], select_all=True)
     elif cmd == "key":
         cmd_key(argv[2], argv[3])
     elif cmd == "wheel":

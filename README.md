@@ -5,6 +5,7 @@
 - **原生 Win32 桌面应用**：C++17 + GDI+，浅色/深色双主题；不使用 WebView、Electron 或浏览器内核。
 - 进程选择器按 **OBS 的方式**列出当前运行中的进程（图标、窗口标题、PID、路径），搜索 / 双击即可选中。
 - 单文件 `dnspilot.exe`，无第三方运行时；另带一个可选的本地 Web 面板（手机/远程查看用）。
+- **绑定查询**：选一个正在运行的程序，或输入域名/网址，直接查看它当前生效的规则与 DNS 服务器。
 
 ![总览（浅色）](docs/screenshots/native-overview-light.png)
 
@@ -37,10 +38,12 @@ run.cmd
 | DNS 服务器 | 配置增删改、服务器列表、主用+回退 / 仅主用 |
 | 浏览器绑定 | 直接修改浏览器配置文件夹中的安全 DNS（DoH），按浏览器 profile 单独绑定 |
 | 系统接管 | 接管/恢复系统 DNS、提权重启、网卡 DNS 现状 |
+| 绑定查询 | 选择运行中的程序或输入域名/网址，查看当前生效的规则、DNS 配置、服务器与策略（只读） |
 | 设置 | 默认配置、缓存/TTL/超时、代理开关与端口、退出恢复、桌面窗口、界面主题 |
 
 ![选择进程（浅色）](docs/screenshots/process-picker-light.png)
 ![浏览器绑定（浅色）](docs/screenshots/browser-binding-light.png)
+![绑定查询（浅色）](docs/screenshots/lookup-light.png)
 
 ## 主题
 
@@ -148,7 +151,7 @@ build.cmd
 build_installer.cmd
 ```
 
-产物：`dist\DNS-Pilot-Setup-1.0.0.exe`（约 505 KB）。
+产物：`dist\DNS-Pilot-Setup-1.1.0.exe`（约 505 KB）。
 
 安装程序行为：
 
@@ -203,6 +206,7 @@ build\browsers_test.exe        :: 浏览器配置绑定（88 项断言）
 - 浏览器配置：Chrome `Preferences` 精确替换 `dns_over_https` 且区间外字节不变；Firefox TRR 写入；备份/关闭状态/路径穿越均覆盖（88/88 PASS）。
 - 桌面界面：OBS 式进程选择器可搜索/双击选中并回填；规则保存、DNS 配置新增、浏览器绑定、设置页均通过实际点击验证。
 - 主题：标题栏按钮与设置页列表均可切换浅色/深色并立即生效；写入 `ui.theme` 后重启保持；总览图表、表单对话框、进程选择器、浏览器绑定页、系统接管页两套主题均已核对。
+- 绑定查询：选择运行中的 `dnspilot.exe` 命中应用规则并显示 Cloudflare / `1.1.1.1, 1.0.0.1`；输入 `https://www.netflix.com/title/1` 自动识别主机名并命中域名规则 `netflix.com`（阿里云 / `223.5.5.5, 223.6.6.6`）；未命中时显示默认配置与系统 DNS；查询前后配置文件哈希不变。
 
 ## 已知限制
 
