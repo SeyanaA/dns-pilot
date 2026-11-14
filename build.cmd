@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-set SRC=src\model.cpp src\dns.cpp src\proc.cpp src\stats.cpp src\engine.cpp src\proxy.cpp src\systemdns.cpp src\httpd.cpp src\ui_native.cpp src\process_picker.cpp src\ui_chart.cpp src\browsers.cpp src\main.cpp
+set SRC=src\model.cpp src\dns.cpp src\proc.cpp src\stats.cpp src\engine.cpp src\proxy.cpp src\systemdns.cpp src\httpd.cpp src\ui_native.cpp src\process_picker.cpp src\ui_chart.cpp src\browsers.cpp src\autostart.cpp src\main.cpp
 echo [1/3] Embedding web assets...
 python tools\embed.py
 if errorlevel 1 exit /b 1

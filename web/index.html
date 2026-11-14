@@ -309,6 +309,13 @@
     </div>
   </section>
 
+  <section class="banner warn" id="dohHint" style="display:none">
+    <div>
+      <h3 id="dohHintTitle">检测到浏览器开启了安全 DNS（DoH）</h3>
+      <p id="dohHintText"></p>
+    </div>
+  </section>
+
   <section class="grid">
     <div class="card">
       <div class="card-head">
@@ -732,6 +739,21 @@ function renderMonitorHint(){
   }
 }
 
+function renderDohHint(){
+  const el = $('#dohHint');
+  if (!el) return;
+  const sd = state.secureDns || {};
+  const list = Array.isArray(sd.profiles) ? sd.profiles : [];
+  if (!sd.detected || !list.length){ el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+  const names = list.slice(0, 3).map(p => `${p.browserName}「${p.name || p.folder}」`).join('、');
+  const suffix = list.length > 1 ? ` 等 ${list.length} 个配置，` : '，';
+  const proxyPort = (state.proxy && state.proxy.port) || 8899;
+  $('#dohHintText').textContent = names + suffix +
+    '已开启安全 DNS（DoH）：查询直接发往 DoH 服务器，不经过本机解析器，因此不会出现在本页面。' +
+    '要按浏览器绑定 DNS，请在桌面端「浏览器绑定」页设置，或让浏览器使用本机代理 127.0.0.1:' + proxyPort + '。';
+}
+
 function renderStream(){
   const events = (state.stats.events || []).slice(-40).reverse();
   const body = $('#liveBody');
@@ -920,6 +942,7 @@ function render(){
   renderPills();
   renderKpis();
   renderMonitorHint();
+  renderDohHint();
   renderStream();
   drawChart(state.stats.timeline);
   renderTops();

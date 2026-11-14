@@ -118,6 +118,8 @@ js::Value configToJson(const Config &c) {
     ui["openBrowser"] = js::Value::boolV(c.ui.openBrowser);
     ui["restoreOnExit"] = js::Value::boolV(c.ui.restoreOnExit);
     ui["nativeWindow"] = js::Value::boolV(c.ui.nativeWindow);
+    ui["autoStart"] = js::Value::boolV(c.ui.autoStart);
+    ui["autoTakeover"] = js::Value::boolV(c.ui.autoTakeover);
     ui["theme"] = js::Value::strV(c.ui.theme);
     v["ui"] = ui;
     return v;
@@ -250,6 +252,8 @@ bool configFromJson(const js::Value &v, Config &c, std::string &err) {
         c.ui.openBrowser = ui->bv("openBrowser", c.ui.openBrowser);
         c.ui.restoreOnExit = ui->bv("restoreOnExit", c.ui.restoreOnExit);
         c.ui.nativeWindow = ui->bv("nativeWindow", c.ui.nativeWindow);
+        c.ui.autoStart = ui->bv("autoStart", c.ui.autoStart);
+        c.ui.autoTakeover = ui->bv("autoTakeover", c.ui.autoTakeover);
         // 只接受 light/dark；缺失或非法（含旧配置没有该字段）一律按浅色处理
         std::string theme = util::trim(ui->s("theme", c.ui.theme));
         c.ui.theme = (theme == "dark") ? "dark" : "light";

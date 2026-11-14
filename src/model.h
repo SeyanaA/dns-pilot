@@ -55,6 +55,8 @@ struct UiCfg {
     bool openBrowser = true;
     bool restoreOnExit = true;
     bool nativeWindow = true;
+    bool autoStart = false;     // 登录时自动启动（计划任务，最高权限）
+    bool autoTakeover = false;  // 启动后自动执行系统 DNS 接管
     std::string theme = "light";  // light / dark；新建配置默认浅色
 };
 

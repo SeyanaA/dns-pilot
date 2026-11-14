@@ -34,8 +34,10 @@ Windows 的 DNS 解析有两个事实，决定了必须同时提供多条路径�
 - **AppRule**：`match`（exe 文件名，支持 `*`/`?` 通配，大小写不敏感）、`profile`、`enabled`、`note`。
 - **DomainRule**：`match`（域名后缀，如 `netflix.com` = `netflix.com` 及其子域；支持 `*.x.com`；仅写 `x.com` 等价）、`profile`、`enabled`、`note`。
   - `match` 在保存和加载时归一化：允许直接粘贴网址（`https://host:port/path?x#y` → `host`），统一小写、去掉末尾点；匹配逻辑对规则与查询名都做同样的归一化，因此旧配置中存成完整 URL 的规则同样生效。
-- **Config**：`version`、`resolver{listen,port,httpPort,cacheEnabled,minTtl,maxTtl,queryTimeoutMs}`、`proxy{enabled,port}`、`profiles[]`、`defaultProfile`、`appRules[]`、`domainRules[]`、`takeover{active,backup[]}`、`ui{openBrowser,restoreOnExit,nativeWindow,theme}`。
+- **Config**：`version`、`resolver{listen,port,httpPort,cacheEnabled,minTtl,maxTtl,queryTimeoutMs}`、`proxy{enabled,port}`、`profiles[]`、`defaultProfile`、`appRules[]`、`domainRules[]`、`takeover{active,backup[]}`、`ui{openBrowser,restoreOnExit,nativeWindow,theme,autoStart,autoTakeover}`。
   - `ui.theme` 取值 `"light"` / `"dark"`，默认 `"light"`；字段缺失或非法时按 `"light"` 处理（旧配置迁移）。
+  - `ui.autoStart`（默认 `false`）：登录时自动启动。开启后通过 Windows 计划任务 `DNS Pilot` 以最高权限运行当前 exe（参数 `--autostart`）。
+  - `ui.autoTakeover`（默认 `false`）：启动后自动执行系统 DNS 接管（需管理员、解析端口 53、自检通过且当前未接管）。
 - **编码与 BOM**：配置文件与导入文件按 UTF-8 JSON 读取；允许 UTF-8 BOM，以及 UTF-16 LE/BE BOM（读取时自动转换为 UTF-8），便于用记事本/PowerShell 编辑后直接使用。解析失败时回退默认配置并报告错误；原文件保持不变，直到下一次保存配置。
 - **规则专用 Profile**：规则勾选自定义服务器时自动创建，`provider="auto"`，名称 `<match> · 专用`；规则不再引用时自动清理。
 - **BrowserProfile（不持久化）**：`browser`、`browserName`、`folder`、`path`、`name`、`email`、`running`、`mode`（off/secure/automatic/unknown）、`dohUrl`；读取自浏览器配置文件，写入时直接修改该文件。
@@ -98,6 +100,7 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
 - 未以管理员运行：接管 API 返回 `403` 与明确提示；可从面板触发提权重启（`POST /api/elevate`，`ShellExecuteW(runas)` 启动新实例，当前实例退出；新实例绑定端口时重试 5s）。
 - `--takeover-plan` 只打印网卡、原配置与将执行的 netsh 命令，不修改系统，用于管理员执行前的核对。
 - 接管前必须自检：解析器对 `example.com` 的探测查询成功，否则拒绝接管（防止断网）。
+- 自动接管（`ui.autoTakeover`）：启动时在解析器就绪后自动尝试一次。未接管、管理员、解析端口 53、自检通过才执行；自检失败每 2 秒重试，最多 5 次。非管理员、端口不是 53 或已接管时跳过并记录原因；自动接管同样受 `restoreOnExit` 约束。
 
 ## 9. 原生桌面界面（默认入口）
 
@@ -107,6 +110,7 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
 - 侧边栏底部显示一行「面板 127.0.0.1:<httpPort>」，点击用默认浏览器打开 `http://127.0.0.1:<httpPort>/`。
 - 总览：KPI 卡片、60 秒原生图表、实时解析流、热门域名/应用；每 700ms 从 `Stats::view()` 刷新。无流量时显示引导：未接管则提示先接管或让应用使用本机代理；已接管则提示检查应用网络与系统 DNS。顶部「解析器」胶囊按实际监听状态显示绿色/红色。
 - 可选 Web 面板（`http://127.0.0.1:<httpPort>/`）：无流量时顶部显示提示条——未接管说明“只运行程序不会自动监测”、普通用户提示先提权，并提供「去系统接管」按钮；已接管但无流量时提示检查网络与系统 DNS。
+- Web 面板同样显示浏览器安全 DNS 提示条（与原生检测一致）：列出浏览器与配置名，说明其查询不会出现在面板中，并建议在桌面端「浏览器绑定」页绑定或让浏览器使用本机代理。
 - Web 面板主题：顶栏月亮/太阳按钮切换浅色/深色，偏好写入 `localStorage`；首次打开且无本地偏好时跟随配置 `ui.theme`（默认浅色）。
 - 应用规则编辑器：
   - **进程选择器**（OBS 风格）：枚举当前所有进程与可见窗口标题，显示图标、进程名、标题、PID、路径；支持搜索、刷新、双击/Enter 确认；返回 exe 名称。
@@ -116,8 +120,13 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
 - 域名规则编辑器：域名后缀 + DNS 配置/自定义服务器。
 - DNS 服务器页：新增、编辑、删除配置；服务器列表逗号分隔；策略（主用+回退 / 仅主用）；`system` 只读。
 - 浏览器绑定页：扫描 Chrome/Edge/Firefox 配置；显示 profile 名称/邮箱/当前 DoH/运行状态；绑定（写 `dns_over_https` 或 `prefs.js` TRR）与恢复默认；运行中的浏览器禁止写入。
+- **浏览器安全 DNS（DoH）检测提示**：检测**正在运行**且已开启安全 DNS 的浏览器配置（Chrome/Edge 的 `dns_over_https.mode` 为 `secure`/`automatic`；Firefox 的 `network.trr.mode` 为 2/3）。命中时总览页在 KPI 下方显示黄色提示条，列出浏览器与配置名，说明这些浏览器的查询直接发往 DoH 服务器、不经过本机解析器（总览看不到，域名/应用规则也不生效），并提供「去浏览器绑定」跳转；关闭浏览器或关闭安全 DNS 后提示自动消失。检测结果缓存 10 秒，只读浏览器配置文件，不写入。
 - 系统接管页：接管/恢复、提权重启、网卡 DNS 列表。
 - 设置页：默认配置、缓存、TTL、超时、代理、端口、退出恢复、桌面窗口开关、界面主题（浅色/深色）、配置导出/导入（导入弹窗支持拖入文件）。
+- 设置页「开机自启动」与「启动时自动接管系统 DNS」：
+  - 开机自启动保存时创建/更新 Windows 计划任务 `DNS Pilot`（`/SC ONLOGON /RL HIGHEST`），命令为 `"<当前 exe>" --autostart`；关闭时删除该任务。两项操作都需要管理员权限，失败时弹窗说明并保持原设置，不静默改配置。
+  - 自动接管开启后，每次启动在解析器就绪后尝试接管：未接管、管理员、解析端口 53、`example.com` 自检通过才执行；自检失败最多重试 5 次（间隔 2 秒），仍失败则记录日志、继续启动且不接管。普通权限启动时跳过，并在桌面窗口弹出提示（日志同时记录原因）。
+  - 两个开关仅在桌面设置页提供（涉及计划任务与提权），Web 面板只读展示状态。
 - 绑定查询页（只读）：
   - **按程序**：从运行中的进程选择一个 exe，显示命中的应用规则（或「默认配置」）、生效的 DNS 配置、服务器列表与策略。
   - **按域名**：输入域名（支持子域；可粘贴 URL，自动取主机名），显示命中的域名规则（最长后缀优先，或「默认配置」）、生效配置、服务器与策略。
@@ -125,6 +134,7 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
   - 仅做规则匹配与配置查询，不写入配置、不触发解析请求；`system` 配置显示当前探测到的网卡 DNS。
 - 窗口自绘标题栏（最小化/最大化/关闭、拖动、边缘缩放）；点关闭按钮或 Alt+F4 弹出确认框：**最小化到任务栏继续运行 / 直接退出程序 / 取消**；选择直接退出时按设置恢复系统 DNS。系统注销/关机（`WM_QUERYENDSESSION`）不弹确认，直接退出。
 - `--no-gui` 时仅运行服务与 Web 面板；从终端启动并进入 GUI 前调用 `FreeConsole()`，避免终端关闭连带退出。
+- `--autostart` 为开机自启动模式（计划任务调用）：不打开浏览器面板；若桌面窗口启用，则最小化到任务栏且不抢焦点。
 
 ### 9.1 主题（浅色 / 深色）
 
@@ -174,7 +184,7 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/` | 内嵌面板 |
-| GET | `/api/state` | 配置摘要、统计、最近事件、网卡/接管/权限状态、版本 |
+| GET | `/api/state` | 配置摘要、统计、最近事件、网卡/接管/权限状态、版本、浏览器安全 DNS 检测（`secureDns`） |
 | GET | `/api/test?domain=&profile=` | 走完整管线解析一次（不写缓存），返回答案/IP/延迟/上游 |
 | POST | `/api/rules/app` | `{op:add\|update\|delete\|toggle, rule}` |
 | POST | `/api/rules/domain` | 同上 |
@@ -246,13 +256,23 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
     - 点击「导入配置…」弹出导入窗口；在窗口内拖入导出的 JSON 文件能完成导入并显示摘要，窗口关闭；点击「选择文件…」同样可导入。
     - 拖入多个文件、非导出包或无法解析的 JSON 时给出明确提示且配置不变；错误后导入窗口保持打开。
     - 主界面与总览图表不接收拖放（拖放只在导入窗口内生效）。
-20. **图标与面板入口**：
-    - `dnspilot.exe` 在资源管理器/任务栏显示 DNS Pilot 品牌图标；安装包与开始菜单/桌面快捷方式使用同一图标。
-    - 主界面侧边栏底部显示「面板 127.0.0.1:<httpPort>」；点击后默认浏览器打开该地址，页面可正常加载。
 19. **BOM 兼容**：
     - 用记事本/PowerShell 保存的 UTF-8 BOM 配置或导入文件能正常解析，不出现“配置文件解析失败”；
     - UTF-16 LE/BE BOM 的同一文件同样能解析（内容一致）；
     - 无 BOM 的 UTF-8 文件行为不变。
+20. **图标与面板入口**：
+    - `dnspilot.exe` 在资源管理器/任务栏显示 DNS Pilot 品牌图标；安装包与开始菜单/桌面快捷方式使用同一图标。
+    - 主界面侧边栏底部显示「面板 127.0.0.1:<httpPort>」；点击后默认浏览器打开该地址，页面可正常加载。
+21. **浏览器安全 DNS（DoH）检测**：
+    - 用测试根（`DNSPILOT_CHROME_ROOT` / `DNSPILOT_EDGE_ROOT` / `DNSPILOT_FIREFOX_ROOT`）构造安全 DNS 已开启的配置，并让对应的浏览器进程名处于运行状态：原生总览出现黄色提示条（含浏览器与配置名），`/api/state` 的 `secureDns.detected=true` 且 `profiles[]` 含该配置与 DoH 地址，Web 面板出现对应提示条。
+    - 关掉浏览器进程或把安全 DNS 改为关闭后，提示在 10 秒内消失。
+    - 检测只读浏览器配置文件，不产生任何写入。
+22. **开机自启动与自动接管**：
+    - 管理员在设置页开启「开机自启动」并保存：`schtasks /Query /TN "DNS Pilot"` 存在，触发器为登录（ONLOGON），运行级别 Highest，任务命令指向当前 exe 且带 `--autostart`；关闭开关后任务被删除。
+    - 非管理员保存「开机自启动」：弹出需要管理员权限的提示，配置保持原值，不创建任务。
+    - 以 `--autostart` 启动：不打开浏览器面板；桌面窗口最小化到任务栏（不抢焦点）。
+    - 开启「自动接管」后启动（管理员、端口 53、未接管、自检通过）：自动接管成功，`takeover.active=true`；已接管或非管理员时跳过并给出提示/日志；自检失败时重试后仍失败则保持未接管、程序继续运行。
+    - 卸载安装包时尽力删除计划任务；若因权限无法删除，按 §13 的手动命令清理。
 
 ## 13. 已知限制
 
@@ -261,3 +281,4 @@ client → 解析问题(qname,qtype,qclass) → 命中规则得到 profile
 - 仅支持 Windows 10/11 x64。
 - 原生界面为自绘控件（列表、开关、滚动条），滚动条不是系统辅助功能控件。
 - 浏览器原生只支持 DoH；需要普通 DNS 时请使用本机代理。
+- 开机自启动使用最高权限计划任务，创建/删除需要管理员权限；卸载前建议先在设置中关闭「开机自启动」。若任务残留，可用管理员执行 `schtasks /Delete /TN "DNS Pilot" /F` 清理。

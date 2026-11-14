@@ -25,4 +25,4 @@ if not exist dist mkdir dist
 if errorlevel 1 exit /b 1
 
 echo.
-echo Installer: %CD%\dist\DNS-Pilot-Setup-1.1.3.exe
+echo Installer: %CD%\dist\DNS-Pilot-Setup-1.1.4.exe

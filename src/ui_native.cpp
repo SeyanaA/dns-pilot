@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "autostart.h"
 #include "browsers.h"
 #include "process_picker.h"
 #include "systemdns.h"
@@ -137,6 +138,7 @@ enum {
     A_EXPORT_PROFILE,
     A_IMPORT_CONFIG,
     A_OPEN_PANEL,
+    A_NAV_BROWSER,
 };
 
 enum { ID_TIMER = 1, ID_CHART = 100 };
@@ -164,6 +166,7 @@ struct UIState {
     UiStats stats;
     Config cfg;
     std::vector<BrowserProfileInfo> browsers;
+    std::vector<BrowserProfileInfo> secureDns;  // 运行中且开启安全 DNS 的浏览器配置
     std::vector<AdapterInfo> adapters;
     std::vector<RECT> navRects;
     std::vector<Action> actions;
@@ -501,11 +504,13 @@ BindingView describeBinding(const std::string &domain, const std::string &exe) {
     return v;
 }
 
-void toast(const std::wstring &text) {
+void toastMs(const std::wstring &text, uint64_t ms) {
     uiState.toast = text;
-    uiState.toastUntil = util::nowMs() + 3500;
+    uiState.toastUntil = util::nowMs() + ms;
     InvalidateRect(uiState.hwnd, nullptr, FALSE);
 }
+
+void toast(const std::wstring &text) { toastMs(text, 3500); }
 
 void msgErr(HWND owner, const std::wstring &text) {
     MessageBoxW(owner, text.c_str(), L"DNS Pilot", MB_OK | MB_ICONERROR);
@@ -1009,6 +1014,14 @@ bool parseServers(const std::wstring &text, std::vector<std::string> &out, std::
 void refreshData() {
     uiState.cfg = uiState.ctx->cfg->snapshot();
     uiState.stats = uiState.ctx->stats->view(60);
+    uiState.secureDns = browsers::secureDnsRunning();
+}
+
+// 重新扫描浏览器配置，并让安全 DNS 检测缓存失效后立刻重算
+void refreshBrowsers() {
+    uiState.browsers = browsers::scan();
+    browsers::invalidateSecureDnsCache();
+    uiState.secureDns = browsers::secureDnsRunning();
 }
 
 // 标题栏主题按钮：切换后立即生效并写入配置（ConfigStore 是唯一写入点）
@@ -1283,7 +1296,15 @@ void openSettingsDialog() {
     f12.label = L"界面主题（立即生效）";
     f12.options = {L"浅色（白底）", L"深色"};
     f12.selected = cfg.ui.theme == "dark" ? 1 : 0;
-    items = {f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12};
+    FormItem f13;
+    f13.type = FT_TOGGLE;
+    f13.label = L"开机自启动（登录时运行，需管理员创建计划任务）";
+    f13.on = cfg.ui.autoStart;
+    FormItem f14;
+    f14.type = FT_TOGGLE;
+    f14.label = L"启动时自动接管系统 DNS（需管理员）";
+    f14.on = cfg.ui.autoTakeover;
+    items = {f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14};
     std::vector<FormItem> out;
     bool ok = ShowForm(
         uiState.hwnd, L"设置", items, nullptr, nullptr,
@@ -1324,6 +1345,17 @@ void openSettingsDialog() {
     int newTimeout = _wtoi(out[4].value.c_str());
     // 主题只需要 light/dark 两个值，索引 0 为浅色、1 为深色
     std::string newTheme = out[11].selected == 1 ? "dark" : "light";
+    bool newAutoStart = out[12].on;
+    bool newAutoTakeover = out[13].on;
+    // 计划任务先落地：失败时不修改配置，避免界面显示“已开启”但任务并不存在
+    if (newAutoStart != cfg.ui.autoStart) {
+        std::string amsg;
+        bool ok = newAutoStart ? autostart::enable(amsg) : autostart::disable(amsg);
+        if (!ok) {
+            msgErr(uiState.hwnd, util::w(amsg));
+            return;
+        }
+    }
     bool restart = newProxyPort != cfg.proxy.port || newPort != cfg.resolver.port ||
                    newHttp != cfg.resolver.httpPort;
     std::string err;
@@ -1341,11 +1373,19 @@ void openSettingsDialog() {
             c.proxy.enabled = proxyNow;
             c.ui.restoreOnExit = out[9].on;
             c.ui.nativeWindow = out[10].on;
+            c.ui.autoStart = newAutoStart;
+            c.ui.autoTakeover = newAutoTakeover;
             c.ui.theme = newTheme;
             return true;
         },
         err);
     if (!saved) {
+        // 配置写入失败时回滚刚改过的计划任务，保持配置与系统状态一致
+        if (newAutoStart != cfg.ui.autoStart) {
+            std::string rmsg;
+            if (newAutoStart) autostart::disable(rmsg);
+            else autostart::enable(rmsg);
+        }
         msgErr(uiState.hwnd, util::w(err));
         return;
     }
@@ -1432,7 +1472,7 @@ void openBrowserDialog(int index) {
         return;
     }
     toast(off ? L"已恢复浏览器默认 DNS" : L"浏览器安全 DNS 已写入配置");
-    uiState.browsers = browsers::scan();
+    refreshBrowsers();
     InvalidateRect(uiState.hwnd, nullptr, FALSE);
 }
 
@@ -2489,8 +2529,36 @@ void paintOverview(Graphics &g, const RECT &content) {
     paintKpi(g, RECT{content.left + (cardW + gap) * 3, y, content.right, y + S(96)}, L"代理连接",
              std::to_wstring(s.proxyConns), L"按应用解析次数");
 
+    // 浏览器安全 DNS（DoH）提示：这些配置的查询会绕过本机解析器
+    int chartTop = y + S(112);
+    if (!uiState.secureDns.empty()) {
+        RECT warn{content.left, y + S(106), content.right, y + S(106) + S(54)};
+        roundRect(g, RectF((REAL)warn.left, (REAL)warn.top, (REAL)(warn.right - warn.left),
+                           (REAL)(warn.bottom - warn.top)),
+                  (REAL)S(10), kBadgeWarnBg, kTakeoverOffBorder);
+        std::wstring head = L"已开启安全 DNS：" + util::w(uiState.secureDns.front().browserName) +
+                            L"「" + util::w(uiState.secureDns.front().name) + L"」";
+        if (uiState.secureDns.size() > 1)
+            head += L" 等 " + std::to_wstring(uiState.secureDns.size()) + L" 个配置";
+        str(g, head, uiState.fSmall, kAmber,
+            RectF((REAL)(warn.left + S(16)), (REAL)(warn.top + S(7)),
+                  (REAL)(warn.right - warn.left - S(176)), (REAL)S(18)));
+        str(g, L"这些浏览器的查询直接发往 DoH 服务器，不经过本机解析器：总览看不到，域名/应用规则也不生效。",
+            uiState.fTiny, kMuted,
+            RectF((REAL)(warn.left + S(16)), (REAL)(warn.top + S(28)),
+                  (REAL)(warn.right - warn.left - S(176)), (REAL)S(18)));
+        RECT go{warn.right - S(146), warn.top + S(13), warn.right - S(16), warn.top + S(41)};
+        roundRect(g, RectF((REAL)go.left, (REAL)go.top, (REAL)(go.right - go.left), (REAL)(go.bottom - go.top)),
+                  (REAL)S(7), kBtnBg, kLine2);
+        str(g, L"去浏览器绑定", uiState.fSmall, kText,
+            RectF((REAL)go.left, (REAL)go.top, (REAL)(go.right - go.left), (REAL)(go.bottom - go.top)),
+            StringAlignmentCenter);
+        addAct(go, A_NAV_BROWSER);
+        chartTop = warn.bottom + gap;
+    }
+
     // 图表卡片
-    RECT chartCard{content.left, y + S(112), content.left + (cw * 62 / 100), y + S(112) + S(196)};
+    RECT chartCard{content.left, chartTop, content.left + (cw * 62 / 100), chartTop + S(196)};
     roundRect(g, RectF((REAL)chartCard.left, (REAL)chartCard.top, (REAL)(chartCard.right - chartCard.left),
                        (REAL)(chartCard.bottom - chartCard.top)),
               (REAL)S(12), kCard, kLine);
@@ -3083,7 +3151,7 @@ void paintSettings(Graphics &g, const RECT &content) {
         StringAlignmentCenter);
     addAct(editBtn, A_SETTINGS);
 
-    RECT card{content.left, y + S(48), content.right, y + S(48) + S(368)};
+    RECT card{content.left, y + S(48), content.right, y + S(48) + S(444)};
     roundRect(g, RectF((REAL)card.left, (REAL)card.top, (REAL)(card.right - card.left),
                        (REAL)(card.bottom - card.top)),
               (REAL)S(12), kCard, kLine);
@@ -3103,6 +3171,8 @@ void paintSettings(Graphics &g, const RECT &content) {
                                   std::to_wstring(uiState.cfg.resolver.httpPort)});
     kv.push_back({L"退出行为", uiState.cfg.ui.restoreOnExit ? L"自动恢复系统 DNS" : L"保留接管状态"});
     kv.push_back({L"桌面窗口", uiState.cfg.ui.nativeWindow ? L"启动时打开" : L"仅 Web 面板"});
+    kv.push_back({L"开机自启动", uiState.cfg.ui.autoStart ? L"已启用 · 登录时运行" : L"未启用"});
+    kv.push_back({L"自动接管", uiState.cfg.ui.autoTakeover ? L"启动时自动接管" : L"关闭"});
     kv.push_back({L"界面主题", uiState.cfg.ui.theme == "dark" ? L"深色" : L"浅色（白底）"});
     int ry = card.top + S(12);
     for (auto &e : kv) {
@@ -3215,6 +3285,12 @@ void onAction(int kind, int index) {
             toast(L"已在浏览器打开面板");
             break;
         }
+        case A_NAV_BROWSER:
+            uiState.page = 4;
+            uiState.scroll[4] = 0;
+            refreshBrowsers();
+            InvalidateRect(uiState.hwnd, nullptr, FALSE);
+            break;
         case A_TAKEOVER: applyTakeover(false); break;
         case A_RESTORE: applyTakeover(true); break;
         case A_ELEVATE: elevate(); break;
@@ -3224,7 +3300,7 @@ void onAction(int kind, int index) {
             break;
         case A_QUIT: DestroyWindow(uiState.hwnd); break;
         case A_BROWSER_REFRESH:
-            uiState.browsers = browsers::scan();
+            refreshBrowsers();
             toast(L"已重新扫描浏览器配置");
             InvalidateRect(uiState.hwnd, nullptr, FALSE);
             break;
@@ -3298,7 +3374,7 @@ void onAction(int kind, int index) {
                 msgErr(uiState.hwnd, util::w(msg));
                 return;
             }
-            uiState.browsers = browsers::scan();
+            refreshBrowsers();
             toast(L"已恢复浏览器默认 DNS");
             InvalidateRect(uiState.hwnd, nullptr, FALSE);
             break;
@@ -3414,7 +3490,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     if (uiState.page != (int)i) {
                         uiState.page = (int)i;
                         uiState.scroll[uiState.page] = 0;
-                        if (uiState.page == 4) uiState.browsers = browsers::scan();
+                        if (uiState.page == 4) refreshBrowsers();
                         if (uiState.page == 5) uiState.adapters = SystemDns::adapters();
                         InvalidateRect(hwnd, nullptr, FALSE);
                     }
@@ -3527,7 +3603,7 @@ int Run(HINSTANCE inst, Context &ctx) {
     uiState.startMs = util::nowMs();
     uiState.cfg = ctx.cfg->snapshot();
     uiState.stats = ctx.stats->view(60);
-    uiState.browsers = browsers::scan();
+    refreshBrowsers();
     uiState.adapters = SystemDns::adapters();
     // 旧配置没有 theme 字段时 model 已归一为 light，这里只需区分 dark
     applyTheme(uiState.cfg.ui.theme != "dark");
@@ -3574,9 +3650,10 @@ int Run(HINSTANCE inst, Context &ctx) {
     int corner = 2;  // DWMWCP_ROUND
     DwmSetWindowAttribute(hwnd, 33, &corner, sizeof(corner));
 
-    ShowWindow(hwnd, SW_SHOW);
+    ShowWindow(hwnd, ctx.startMinimized ? SW_SHOWMINNOACTIVE : SW_SHOW);
     UpdateWindow(hwnd);
-    SetForegroundWindow(hwnd);
+    if (!ctx.startMinimized) SetForegroundWindow(hwnd);
+    if (!ctx.startupNotice.empty()) toastMs(util::w(ctx.startupNotice), 8000);
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {

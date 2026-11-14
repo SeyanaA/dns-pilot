@@ -14,7 +14,7 @@ Unicode true
 !define LANG_EN 1033
 
 !define APP_NAME "DNS Pilot"
-!define APP_VERSION "1.1.3"
+!define APP_VERSION "1.1.4"
 !define APP_EXE "dnspilot.exe"
 !define APP_PUBLISHER "DNS Pilot"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DNSPilot"
@@ -31,7 +31,7 @@ ManifestDPIAware true
 ShowInstDetails show
 ShowUninstDetails show
 
-VIProductVersion "1.1.3.0"
+VIProductVersion "1.1.4.0"
 VIAddVersionKey "ProductName" "${APP_NAME}"
 VIAddVersionKey "FileDescription" "${APP_NAME} 安装程序"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
@@ -133,6 +133,10 @@ Section "Uninstall"
         SendMessage $0 ${WM_CLOSE} 0 0
         Sleep 2500
     ${EndIf}
+
+    ; 开机自启动计划任务（最高权限任务需要管理员才能删除；此处尽力清理）
+    nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "DNS Pilot" /F'
+    Pop $0
 
     Delete "$DESKTOP\${APP_NAME}.lnk"
     RMDir /r "$SMPROGRAMS\${APP_NAME}"

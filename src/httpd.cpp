@@ -4,6 +4,7 @@
 #include <cstring>
 #include <vector>
 
+#include "browsers.h"
 #include "web_asset.h"
 
 static bool hSendAll(SOCKET s, const void *data, size_t len) {
@@ -418,6 +419,24 @@ std::string Httpd::route(const std::string &method, const std::string &path,
         }
         t["adapters"] = ads;
         v["takeover"] = t;
+
+        auto sd = browsers::secureDnsRunning();
+        js::Value sdo = js::Value::objV();
+        sdo["detected"] = js::Value::boolV(!sd.empty());
+        js::Value sdp = js::Value::arrV();
+        for (auto &b : sd) {
+            js::Value o = js::Value::objV();
+            o["browser"] = js::Value::strV(b.browser);
+            o["browserName"] = js::Value::strV(b.browserName);
+            o["folder"] = js::Value::strV(b.folder);
+            o["name"] = js::Value::strV(b.name);
+            o["mode"] = js::Value::strV(b.mode);
+            o["dohUrl"] = js::Value::strV(b.dohUrl);
+            o["running"] = js::Value::boolV(b.running);
+            sdp.arr.push_back(o);
+        }
+        sdo["profiles"] = sdp;
+        v["secureDns"] = sdo;
 
         js::Value st = stats_.snapshot(200);
         v["stats"] = st;

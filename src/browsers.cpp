@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -950,10 +951,12 @@ bool firefoxLocked(const std::wstring &dir) {
 // 扫描
 // ---------------------------------------------------------------------------
 
-void scanChromium(const std::string &browser, std::vector<BrowserProfileInfo> &out) {
+void scanChromium(const std::string &browser, std::vector<BrowserProfileInfo> &out,
+                  bool requireRunning = false) {
     std::wstring root = chromiumRoot(browser);
     if (root.empty() || !isDir(root)) return;
     bool running = processRunning(browser == "chrome" ? L"chrome.exe" : L"msedge.exe");
+    if (requireRunning && !running) return;
 
     std::vector<std::wstring> dirs;
     listDirs(root, dirs);
@@ -988,10 +991,11 @@ void scanChromium(const std::string &browser, std::vector<BrowserProfileInfo> &o
     }
 }
 
-void scanFirefox(std::vector<BrowserProfileInfo> &out) {
+void scanFirefox(std::vector<BrowserProfileInfo> &out, bool requireRunning = false) {
     std::wstring root = firefoxRoot();
     if (root.empty() || !isDir(root)) return;
     bool running = processRunning(L"firefox.exe");
+    if (requireRunning && !running) return;
 
     std::vector<IniEntry> ini;
     std::wstring iniPath = profilesIniPath(root);
@@ -1189,6 +1193,41 @@ bool applyFirefox(const std::string &folder, const std::string &dohUrl, bool off
 }
 
 }  // namespace
+
+namespace {
+
+std::mutex gSecureMu;
+std::vector<BrowserProfileInfo> gSecureCache;
+ULONGLONG gSecureAt = 0;
+bool gSecureValid = false;
+constexpr ULONGLONG kSecureCacheMs = 10000;
+
+}  // namespace
+
+std::vector<BrowserProfileInfo> browsers::secureDnsRunning() {
+    std::lock_guard<std::mutex> lock(gSecureMu);
+    ULONGLONG now = GetTickCount64();
+    if (gSecureValid && now - gSecureAt < kSecureCacheMs) return gSecureCache;
+
+    std::vector<BrowserProfileInfo> all;
+    scanChromium("chrome", all, true);
+    scanChromium("edge", all, true);
+    scanFirefox(all, true);
+
+    std::vector<BrowserProfileInfo> hit;
+    for (auto &b : all) {
+        if (b.mode == "secure" || b.mode == "automatic") hit.push_back(std::move(b));
+    }
+    gSecureCache = std::move(hit);
+    gSecureAt = now;
+    gSecureValid = true;
+    return gSecureCache;
+}
+
+void browsers::invalidateSecureDnsCache() {
+    std::lock_guard<std::mutex> lock(gSecureMu);
+    gSecureValid = false;
+}
 
 std::vector<BrowserProfileInfo> browsers::scan() {
     std::vector<BrowserProfileInfo> out;

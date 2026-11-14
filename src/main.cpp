@@ -7,6 +7,7 @@
 #include "engine.h"
 #include "httpd.h"
 #include "ui_native.h"
+#include "autostart.h"
 #include "model.h"
 #include "proc.h"
 #include "proxy.h"
@@ -14,7 +15,7 @@
 #include "systemdns.h"
 #include "util.h"
 
-static const char *kVersion = "1.1.3";
+static const char *kVersion = "1.1.4";
 
 struct Options {
     std::string configPath;
@@ -24,6 +25,7 @@ struct Options {
     bool noBrowser = false, noProxy = false, takeover = false, restore = false;
     bool elevate = false, status = false, help = false, verbose = false, takeoverPlan = false;
     bool noGui = false;
+    bool autostart = false;  // 由计划任务传入：最小化窗口、不打开浏览器面板
 };
 
 static bool g_hasConsole = false;
@@ -64,6 +66,7 @@ static void printHelp() {
         "  --no-proxy         不启动应用代理\n"
         "  --no-browser       不自动打开浏览器面板\n"
         "  --no-gui           不创建桌面窗口（仅运行 Web 面板与 API）\n"
+        "  --autostart        开机自启动模式：最小化窗口、不打开浏览器面板\n"
         "  --takeover         启动后接管系统 DNS（需管理员）\n"
         "  --takeover-plan    只打印接管计划（网卡与 netsh 命令），不执行\n"
         "  --restore          恢复系统 DNS 后退出（需管理员）\n"
@@ -126,6 +129,7 @@ int main(int argc, char **argv) {
         else if (a == "--import-config" && i + 1 < argc) opt.importPath = argv[++i];
         else if (a == "--no-browser") opt.noBrowser = true;
         else if (a == "--no-gui") opt.noGui = true;
+        else if (a == "--autostart") opt.autostart = true;
         else if (a == "--no-proxy") opt.noProxy = true;
         else if (a == "--takeover") opt.takeover = true;
         else if (a == "--takeover-plan") opt.takeoverPlan = true;
@@ -323,6 +327,22 @@ int main(int argc, char **argv) {
     util::logInfo("配置文件: " + cfg.path());
     util::logInfo(std::string("运行权限: ") + (util::isAdmin() ? "管理员" : "普通用户"));
 
+    // 开机自启动：管理员启动时自动更新计划任务（自愈路径变化/被删）；普通权限只检查
+    if (cfg.snapshot().ui.autoStart) {
+        if (util::isAdmin()) {
+            std::string amsg;
+            if (autostart::enable(amsg)) util::logInfo("开机自启动任务已更新");
+            else util::logWarn("更新开机自启动任务失败：" + amsg);
+        } else if (!autostart::taskExists()) {
+            util::logWarn("配置已开启开机自启动，但计划任务不存在；请以管理员身份重启后重新保存设置");
+        }
+    } else if (util::isAdmin() && autostart::taskExists()) {
+        // 配置已关闭但任务残留（例如上次关闭时权限不足）：管理员启动时清理
+        std::string amsg;
+        if (autostart::disable(amsg)) util::logInfo("已清理残留的开机自启动任务");
+        else util::logWarn("清理开机自启动任务失败：" + amsg);
+    }
+
     Stats stats;
     ProcTracker proc;
     DnsCache cache;
@@ -348,28 +368,54 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (opt.takeover) {
+    // 启动时自动接管（ui.autoTakeover）与命令行 --takeover 共用同一套检查
+    std::string autoTakeoverNotice;
+    auto attemptTakeover = [&](bool retry, const char *source) {
         if (!util::isAdmin()) {
-            util::logWarn("接管系统 DNS 需要管理员权限；可运行 dnspilot.exe --elevate");
-        } else if (cfg.takeover().active) {
-            util::logWarn("系统 DNS 已接管；请先运行 dnspilot.exe --restore，避免用环回地址覆盖备份");
-        } else if (cfg.resolver().port != 53) {
-            util::logWarn("接管要求解析端口为 53，当前为 " + std::to_string(cfg.resolver().port));
-        } else {
-            std::string terr;
-            if (!engine.selfTest(terr)) {
-                util::logError("自检失败，未接管系统 DNS：" + terr);
-            } else {
+            util::logWarn(std::string(source) + "：需要管理员权限，已跳过（可用“以管理员身份重启”）");
+            autoTakeoverNotice = "自动接管需要管理员权限，已跳过";
+            return false;
+        }
+        if (cfg.takeover().active) {
+            util::logInfo(std::string(source) + "：系统 DNS 已接管，跳过");
+            return false;
+        }
+        if (cfg.resolver().port != 53) {
+            util::logWarn(std::string(source) + "：接管要求解析端口为 53，当前为 " +
+                          std::to_string(cfg.resolver().port));
+            autoTakeoverNotice = "自动接管需要解析端口 53，已跳过";
+            return false;
+        }
+        int attempts = retry ? 5 : 1;
+        std::string terr;
+        for (int i = 0; i < attempts; i++) {
+            if (engine.selfTest(terr)) {
                 std::vector<TakeoverBackup> backup;
                 TakeoverResult res;
                 if (SystemDns::apply(engine.ipv6Ready(), backup, res)) {
                     cfg.setTakeover(true, backup);
                     util::logInfo(res.message);
-                } else {
-                    util::logError("接管失败：" + res.message);
+                    return true;
                 }
+                util::logError("接管失败：" + res.message);
+                autoTakeoverNotice = "自动接管失败：" + res.message;
+                return false;
+            }
+            if (i + 1 < attempts) {
+                util::logWarn("自检失败，2 秒后重试：" + terr);
+                Sleep(2000);
             }
         }
+        util::logError("自检失败，未接管系统 DNS：" + terr);
+        autoTakeoverNotice = "自动接管失败：解析自检未通过";
+        return false;
+    };
+
+    if (opt.takeover) {
+        attemptTakeover(false, "命令行 --takeover");
+    } else if (cfg.snapshot().ui.autoTakeover) {
+        util::logInfo("已开启启动时自动接管系统 DNS");
+        attemptTakeover(true, "启动时自动接管");
     }
 
     printf("\n");
@@ -402,11 +448,13 @@ int main(int argc, char **argv) {
         uctx.proxy = &proxy;
         uctx.version = kVersion;
         uctx.relaunchArgs = relaunchArgs;
+        uctx.startMinimized = opt.autostart;
+        uctx.startupNotice = autoTakeoverNotice;
         guiShown = ui::Run(GetModuleHandleW(nullptr), uctx) == 0;
         if (!guiShown) util::logWarn("桌面窗口不可用，回退到浏览器面板");
     }
     if (!guiShown) {
-        if (cfg.snapshot().ui.openBrowser)
+        if (!opt.autostart && cfg.snapshot().ui.openBrowser)
             util::openUrl("http://127.0.0.1:" + std::to_string(cfg.resolver().httpPort) + "/");
         while (!util::quitFlag()) Sleep(200);
     }
